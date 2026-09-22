@@ -1,0 +1,48 @@
+=== Captain scenario: translateimage secondmate dead-quota hard gates ===
+Fixture home: /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-secondmate-health-demo.dwFWjK
+
+--- 1. Live pin vs quota-axi ---
+meta model: model=zai-coding-cn/glm-5.3
+meta harness: harness=pi
+quota GLM status: dead
+quota Luna status: ok
+
+--- 2. Unhandled steering backlog (parent-route style local state/<id>.inbox) ---
+inbox_health: count=112	oldest_age=278317	newest_ids=110,111,112
+inbox_breached: YES (hard gate: >20 unhandled OR oldest >2h)
+
+--- 3. Melt profile selection (deterministic, not agent memory) ---
+chosen_profile_tsv: codex	gpt-5.6-luna	max	crew-dispatch-default
+expected: skip Sol + dead GLM, select codex/gpt-5.6-luna/max from crew-dispatch
+
+--- 4. Watcher health tick end-to-end (inbox alarm + quota-dead melt) ---
+health_tick_rc=0
+
+--- 5. Observable side effects after hard gates fire ---
+meta AFTER melt:
+kind=secondmate
+harness=codex
+model=gpt-5.6-luna
+effort=max
+provider=codex
+home=translateimage
+
+relaunch.log:
+relaunch argv: translateimage relaunch --harness codex --model gpt-5.6-luna --effort max
+
+wake.log:
+WAKE channel=check subject=secondmate-inbox-backlog-translateimage
+body=check: secondmate inbox backlog: mate=translateimage count=112 oldest_age=278319s newest_ids=110,111,112
+
+WAKE channel=check subject=secondmate-model-melt-translateimage
+body=check: secondmate model melt: home=translateimage old=pi/zai-coding-cn/glm-5.3 new=codex/gpt-5.6-luna why=quota-axi marks the current provider/model exhausted source=crew-dispatch-default
+
+
+wake-calls.log:
+WAKE_CALL check: secondmate inbox backlog: mate=translateimage count=112 oldest_age=278319s newest_ids=110,111,112
+WAKE_CALL check: secondmate model melt: home=translateimage old=pi/zai-coding-cn/glm-5.3 new=codex/gpt-5.6-luna why=quota-axi marks the current provider/model exhausted source=crew-dispatch-default
+
+cooldown marker:
+(cleared after successful melt — correct)
+
+RESULT: PASS — dead-quota GLM pin melted to Luna; inbox backlog alarmed; home no longer silently stalled

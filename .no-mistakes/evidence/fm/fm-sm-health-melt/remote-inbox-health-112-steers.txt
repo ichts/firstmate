@@ -1,0 +1,5 @@
+=== Remote control-plane inbox-health for 112 unhandled steers ===
+fm-remote-secondmate-control.sh inbox-health translateimage
+=> count=112	oldest_age=278322	newest_ids=110,111,112
+parsed count=112 oldest_age=278322
+RESULT: PASS — remote measurement sees 112 steers and breaches hard gate

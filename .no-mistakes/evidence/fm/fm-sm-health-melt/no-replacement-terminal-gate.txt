@@ -1,0 +1,24 @@
+=== Scenario: dead quota, no replacement → terminal hard gate ===
+health_tick_rc=0
+
+meta AFTER (must remain dead pin; no silent thrash relaunch):
+kind=secondmate
+harness=pi
+model=zai-coding-cn/glm-5.3
+effort=high
+provider=pi
+
+relaunch.log (must be absent/empty):
+(none — correct: terminal path refuses relaunch)
+
+wake.log:
+WAKE channel=check subject=secondmate-model-melt-stuck
+body=check: secondmate model melt: home=stuck old=pi/zai-coding-cn/glm-5.3 new=none why=quota-axi marks the current provider/model exhausted; no quota-verified replacement profile is available
+
+
+cooldown active on dead pin?
+cooldown: YES on live dead pin
+
+wake.log after cooled second tick (must be empty):
+(empty — correct)
+RESULT: PASS — terminal no-replacement melt cools dead pin; no silent stall and no thrash
