@@ -1,0 +1,26 @@
+=== Automated: tests/fm-dispatch-resolve.test.sh ===
+ok - schema 6: each candidate binds to its account row; schema 5 is unchanged
+ok - quota evidence comes from one quota-axi --json read, and its failure is an error outcome
+ok - API, transport, and response failures are error outcomes with exit 0
+ok - configuration errors exit 2 before any network call
+# all fm-dispatch-resolve tests passed
+
+=== Automated: bootstrap crew-dispatch validation ===
+ok - bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO
+ok - bootstrap gates resolver fields and additive harnesses on the typed key
+
+=== E2E key lines ===
+SCENARIO 1: Near-reset Codex headroom (31% remaining, runway=through_reset,
+  note: declared quality preference active; spendPriority ranked the qualifying quality profiles
+  candidate: pi:openai-codex/gpt-5.6-sol  provider=codex  scope=all_models  remaining=31%  spendPriority=-0.1649  runway=through_reset  prefer_quality=true  resetsAt=2030-01-02T00:00:00Z  quality_reason=headroom reaches a near reset  -> eligible
+  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol' --effort 'medium'
+SCENARIO 2: Comfortable headroom (60% remaining >= comfortable_percent 50).
+  note: declared quality preference active; spendPriority ranked the qualifying quality profiles
+  candidate: pi:openai-codex/gpt-5.6-sol  provider=codex  scope=all_models  remaining=60%  spendPriority=-0.1649  runway=projected_exhaustion  prefer_quality=true  resetsAt=-  quality_reason=comfortable headroom  -> eligible
+  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol' --effort 'medium'
+SCENARIO 3: Insufficient headroom (31%, projected_exhaustion, no near reset).
+  note: declared quality preference inactive; spendPriority ranked the fallback profiles
+  candidate: pi:openai-codex/gpt-5.6-sol  provider=codex  scope=all_models  remaining=31%  spendPriority=-0.1649  runway=projected_exhaustion  prefer_quality=-  resetsAt=-  quality_reason=quality preference threshold not met  -> eligible
+  profile: --harness 'codex' --model 'gpt-5.6-luna' --effort 'medium'
+SCENARIO 4: Validation rejects prefer_quality without quality_preference
+exit=2

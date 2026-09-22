@@ -1,0 +1,134 @@
+=== Captain standing: prefer high quality when headroom + near/through reset ===
+Config: docs/examples/crew-dispatch.json
+
+{
+  "quality_preference": { "comfortable_percent": 50, "reset_within_hours": 72 },
+  "rules": [
+    {
+      "when": "The task depends on fresh news, current events, live public facts, or recent market and product changes.",
+      "use": { "harness": "grok" },
+      "why": "Grok is the preferred dispatch when current web-connected context is central to the work."
+    },
+    {
+      "when": "The task is a trivial mechanical edit such as a rote rename, formatting sweep, targeted typo fix, or simple file gathering.",
+      "use": { "harness": "claude", "model": "haiku", "effort": "low" },
+      "why": "Use the cheapest fast profile when the task is narrow and low ambiguity."
+    },
+    {
+      "when": "The task is a big or ambiguous multi-file feature, a risky refactor, or work that requires holding many moving parts in mind.",
+      "use": [
+        { "harness": "claude", "model": "claude-sonnet-5", "effort": "high" },
+        { "harness": "codex", "model": "gpt-5.5", "effort": "high" }
+      ],
+      "why": "Use a strong coding profile for big, ambiguous work; resolve the alternatives through quota-array-dispatch."
+    }
+  ],
+  "default": [
+    { "harness": "pi", "model": "openai-codex/gpt-5.6-sol", "effort": "medium", "provider": "codex", "prefer_quality": true },
+    { "harness": "codex", "model": "gpt-5.6-luna", "effort": "medium" }
+  ]
+}
+
+================================================================
+SCENARIO 1: Near-reset Codex headroom (31% remaining, runway=through_reset,
+            resetsAt within 72h of snapshot). Expect Sol medium, NOT Luna.
+================================================================
+--- quota-axi evidence (codex row) ---
+{
+  "provider": "codex",
+  "generatedAt": "2030-01-01T00:00:00Z",
+  "windows": [
+    {
+      "id": "weekly",
+      "resetsAt": "2030-01-02T00:00:00Z"
+    }
+  ],
+  "row": {
+    "scope": "all_models",
+    "status": "known",
+    "effectivePercentRemaining": 31,
+    "runway": {
+      "status": "through_reset"
+    },
+    "selection": {
+      "spendPriority": -0.1649
+    },
+    "limitingWindowIds": [
+      "weekly"
+    ]
+  }
+}
+--- fm-dispatch-resolve output ---
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 226   tokens: 812/60
+  rule: default (No listed rule applies to this task.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.02 rule_3=0.02 default=0.94
+  note: no rule matched
+  note: declared quality preference active; spendPriority ranked the qualifying quality profiles
+  candidate: pi:openai-codex/gpt-5.6-sol  provider=codex  scope=all_models  remaining=31%  spendPriority=-0.1649  runway=through_reset  prefer_quality=true  resetsAt=2030-01-02T00:00:00Z  quality_reason=headroom reaches a near reset  -> eligible
+  candidate: codex:gpt-5.6-luna  provider=codex  scope=all_models  remaining=31%  spendPriority=-0.1649  runway=through_reset  -> eligible
+  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol' --effort 'medium'
+
+================================================================
+SCENARIO 2: Comfortable headroom (60% remaining >= comfortable_percent 50).
+            Expect Sol medium regardless of reset proximity.
+================================================================
+--- quota-axi evidence (codex row) ---
+{
+  "scope": "all_models",
+  "status": "known",
+  "effectivePercentRemaining": 60,
+  "runway": {
+    "status": "projected_exhaustion"
+  },
+  "selection": {
+    "spendPriority": -0.1649
+  }
+}
+--- fm-dispatch-resolve output ---
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 29   tokens: 812/60
+  rule: default (No listed rule applies to this task.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.02 rule_3=0.02 default=0.94
+  note: no rule matched
+  note: declared quality preference active; spendPriority ranked the qualifying quality profiles
+  candidate: pi:openai-codex/gpt-5.6-sol  provider=codex  scope=all_models  remaining=60%  spendPriority=-0.1649  runway=projected_exhaustion  prefer_quality=true  resetsAt=-  quality_reason=comfortable headroom  -> eligible
+  candidate: codex:gpt-5.6-luna  provider=codex  scope=all_models  remaining=60%  spendPriority=-0.1649  runway=projected_exhaustion  -> eligible
+  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol' --effort 'medium'
+
+================================================================
+SCENARIO 3: Insufficient headroom (31%, projected_exhaustion, no near reset).
+            Quality preference inactive -> Luna fallback, not silent Sol.
+================================================================
+--- quota-axi evidence (codex row) ---
+{
+  "scope": "all_models",
+  "status": "known",
+  "effectivePercentRemaining": 31,
+  "runway": {
+    "status": "projected_exhaustion"
+  },
+  "selection": {
+    "spendPriority": -0.1649
+  }
+}
+--- fm-dispatch-resolve output ---
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 29   tokens: 812/60
+  rule: default (No listed rule applies to this task.)   confidence: 0.9
+  probabilities: rule_1=0.02 rule_2=0.02 rule_3=0.02 default=0.94
+  note: no rule matched
+  note: declared quality preference inactive; spendPriority ranked the fallback profiles
+  candidate: pi:openai-codex/gpt-5.6-sol  provider=codex  scope=all_models  remaining=31%  spendPriority=-0.1649  runway=projected_exhaustion  prefer_quality=-  resetsAt=-  quality_reason=quality preference threshold not met  -> eligible
+  candidate: codex:gpt-5.6-luna  provider=codex  scope=all_models  remaining=31%  spendPriority=-0.1649  runway=projected_exhaustion  -> eligible
+  profile: --harness 'codex' --model 'gpt-5.6-luna' --effort 'medium'
+
+================================================================
+SCENARIO 4: Validation rejects prefer_quality without quality_preference
+================================================================
+exit=2
+stderr: error: malformed rules file: /var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/tmp.si99rV6leN/home/config/crew-dispatch.json - prefer_quality profiles need top-level quality_preference
+stdout: 
