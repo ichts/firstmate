@@ -142,6 +142,7 @@ export FM_SECONDMATE_MELT_COOLDOWN_SECS
   # shellcheck source=bin/fm-watch.sh
   . "$ROOT/bin/fm-watch.sh"
   SCRIPT_DIR="$watch_home/bin"
+  # shellcheck disable=SC2030 # PATH is intentionally subshell-local for the melt stub bin/.
   PATH="$watch_home/bin:$PATH"
   export PATH
   wakes=0
@@ -221,6 +222,7 @@ chmod +x "$watch_home/bin/fm-control.sh"
   # shellcheck source=bin/fm-watch.sh
   . "$ROOT/bin/fm-watch.sh"
   SCRIPT_DIR="$watch_home/bin"
+  # shellcheck disable=SC2031 # PATH is intentionally subshell-local for the melt stub bin/.
   PATH="$watch_home/bin:$PATH"
   export PATH
   fm_wake_append() { printf '%s\n' "$3" >> "$watch_home/state/success-wake.log"; }
