@@ -1104,8 +1104,8 @@ secondmate_liveness_tick() {
 # remote relaunch. Local control already publishes the same fields, but doing
 # this for both placements keeps the parent record authoritative and makes a
 # remote replacement visible to the next health sample.
-secondmate_health_update_profile_meta() {  # <meta> <harness> <model> <effort>
-  local meta=$1 harness=$2 model=$3 effort=$4 state_dir lock tmp status=0
+secondmate_health_update_profile_meta() {  # <meta> <harness> <model> <effort> [provider]
+  local meta=$1 harness=$2 model=$3 effort=$4 provider=${5:-} state_dir lock tmp status=0
   state_dir=${meta%/*}
   lock=$(fm_meta_lock_path "$meta") || return 1
   fm_lock_acquire_wait "$lock" || return 1
@@ -1114,14 +1114,23 @@ secondmate_health_update_profile_meta() {  # <meta> <harness> <model> <effort>
     return 1
   fi
   tmp=$(mktemp "$state_dir/.secondmate-meta-health.XXXXXX") || status=1
-  if [ "$status" -eq 0 ] && ! awk -v harness="$harness" -v model="$model" -v effort="$effort" '
-    BEGIN { seen_h=seen_m=seen_e=0 }
+  if [ "$status" -eq 0 ] && ! awk -v harness="$harness" -v model="$model" -v effort="$effort" -v provider="$provider" '
+    BEGIN { seen_h=seen_m=seen_e=seen_p=0 }
     /^harness=/ { print "harness=" harness; seen_h=1; next }
     /^model=/ { print "model=" model; seen_m=1; next }
     /^effort=/ { print "effort=" effort; seen_e=1; next }
+    /^provider=/ {
+      if (provider != "") { print "provider=" provider; seen_p=1; next }
+      print
+      seen_p=1
+      next
+    }
     { print }
     END {
-      if (!seen_h || !seen_m || !seen_e) exit 1
+      if (!seen_h) print "harness=" harness
+      if (!seen_m) print "model=" model
+      if (!seen_e) print "effort=" effort
+      if (provider != "" && !seen_p) print "provider=" provider
     }
   ' "$meta" > "$tmp"; then
     status=1
@@ -1178,22 +1187,27 @@ secondmate_health_inbox_alarm() {  # <id> <meta>
 }
 
 secondmate_health_capture() {  # <id> <meta>
-  local id=$1 meta=$2 remote_host backend target state_out state capture
+  # Exit 0 only after the endpoint is proven alive. Pane text is best-effort:
+  # an empty capture still lets quota-dead melt run against a live commander.
+  # Exit 2 means the endpoint is not alive; exit 1 means transport/target
+  # state could not be established safely for relaunch.
+  local id=$1 meta=$2 remote_host backend target state_out state capture=
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
     state_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null) || return 1
     state=$(printf '%s\n' "$state_out" | tail -1)
     [ "$state" = alive ] || return 2
-    capture=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh capture "$id" 80 < /dev/null 2>/dev/null) || return 1
+    capture=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh capture "$id" 80 < /dev/null 2>/dev/null) || capture=
   else
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     [ -n "$target" ] || return 1
     state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)
     [ "$state" = alive ] || return 2
-    capture=$(fm_backend_capture "$backend" "$target" 80 "fm-$id" 2>/dev/null) || return 1
+    capture=$(fm_backend_capture "$backend" "$target" 80 "fm-$id" 2>/dev/null) || capture=
   fi
   printf '%s' "$capture"
+  return 0
 }
 
 secondmate_health_quota_snapshot() {
@@ -1210,9 +1224,38 @@ secondmate_health_quota_snapshot() {
   fi
 }
 
+secondmate_health_live_pin_quota_dead() {  # <meta> <snapshot>
+  local meta=$1 snapshot=$2 harness model provider status
+  [ -n "$snapshot" ] || return 1
+  harness=$(fm_meta_get "$meta" harness)
+  model=$(fm_meta_get "$meta" model)
+  [ -n "$harness" ] && [ -n "$model" ] || return 1
+  provider=$(fm_meta_get "$meta" provider)
+  status=$(fm_secondmate_melt_quota_status "$snapshot" "$harness" "$model" "$provider")
+  [ "$status" = dead ]
+}
+
+# Quota proves the recorded pin is dead, but the endpoint is not a safe
+# relaunch target (not alive, or state unreadable). Publish one durable check
+# and cool the still-recorded dead pin instead of attempting lifecycle control.
+secondmate_health_quota_dead_unreachable() {  # <id> <meta> <snapshot> <endpoint_note>
+  local id=$1 meta=$2 snapshot=$3 endpoint_note=$4
+  local harness model reason
+  harness=$(fm_meta_get "$meta" harness)
+  model=$(fm_meta_get "$meta" model)
+  [ -n "$harness" ] && [ -n "$model" ] || return 0
+  secondmate_health_live_pin_quota_dead "$meta" "$snapshot" || return 0
+  fm_secondmate_melt_cooldown_active "$STATE" "$id" "$harness" "$model" && return 0
+  reason="check: secondmate model melt: home=$id old=$harness/$model new=none why=quota-axi marks the current provider/model exhausted; endpoint $endpoint_note so automatic relaunch was refused"
+  fm_wake_append check "secondmate-model-melt-$id" "$reason" || return 1
+  fm_secondmate_melt_cooldown_write "$STATE" "$id" "$harness" "$model" || return 1
+  wake "$reason"
+  return 0
+}
+
 secondmate_health_model_melt() {  # <id> <meta> <snapshot> <capture>
   local id=$1 meta=$2 snapshot=$3 capture=$4 harness model effort provider status evidence_count
-  local profile new_harness new_model new_effort source out rc old_description new_description reason
+  local profile new_harness new_model new_effort new_provider source out rc old_description new_description reason
   [ -n "$snapshot" ] || snapshot=
   harness=$(fm_meta_get "$meta" harness)
   model=$(fm_meta_get "$meta" model)
@@ -1264,20 +1307,28 @@ EOF
     wake "$reason"
     return 0
   fi
-  if ! secondmate_health_update_profile_meta "$meta" "$new_harness" "$new_model" "$new_effort"; then
+  new_provider=$(fm_secondmate_melt_profile_provider "$new_harness" "$new_model" 2>/dev/null || true)
+  if ! secondmate_health_update_profile_meta "$meta" "$new_harness" "$new_model" "$new_effort" "$new_provider"; then
     reason="check: secondmate model melt: home=$id old=$old_description new=$new_description why=$reason; relaunch succeeded but the parent's profile record could not be updated"
-  else
-    reason="check: secondmate model melt: home=$id old=$old_description new=$new_description why=$reason source=$source"
+    fm_wake_append check "secondmate-model-melt-$id" "$reason" || return 1
+    # Detection still reads the old meta pin; cool that pair so the next tick
+    # does not relaunch on every health interval while the record stays stale.
+    fm_secondmate_melt_cooldown_write "$STATE" "$id" "$harness" "$model" || return 1
+    wake "$reason"
+    return 0
   fi
+  reason="check: secondmate model melt: home=$id old=$old_description new=$new_description why=$reason source=$source"
   fm_wake_append check "secondmate-model-melt-$id" "$reason" || return 1
-  fm_secondmate_melt_cooldown_write "$STATE" "$id" "$new_harness" "$new_model" || return 1
-  rm -f "$STATE/.secondmate-melt-evidence-$id"
+  # Successful replacement with an updated profile must not suppress a later
+  # quota-dead detection on the new pin.
+  rm -f "$STATE/.secondmate-melt-cooldown-$id" \
+    "$STATE/.secondmate-melt-evidence-$id"
   wake "$reason"
   return 0
 }
 
 secondmate_health_tick() {
-  local last="$STATE/.secondmate-health-last" snapshot meta id kind capture
+  local last="$STATE/.secondmate-health-last" snapshot meta id kind capture capture_rc endpoint_note
   [ "$(age_of "$last")" -ge "$SECONDMATE_HEALTH_INTERVAL_SECS" ] || return 0
   touch "$last" || return 1
   snapshot=$(secondmate_health_quota_snapshot)
@@ -1289,10 +1340,19 @@ secondmate_health_tick() {
     id=${id%.meta}
     secondmate_health_inbox_alarm "$id" "$meta" || return 1
     capture=
-    if ! capture=$(secondmate_health_capture "$id" "$meta"); then
+    capture_rc=0
+    capture=$(secondmate_health_capture "$id" "$meta") || capture_rc=$?
+    if [ "$capture_rc" -eq 0 ]; then
+      secondmate_health_model_melt "$id" "$meta" "$snapshot" "$capture" || return 1
       continue
     fi
-    secondmate_health_model_melt "$id" "$meta" "$snapshot" "$capture" || return 1
+    # Alive-only melt path failed. If quota already proves the recorded pin is
+    # dead, publish a durable outcome rather than silently skipping the gate.
+    case "$capture_rc" in
+      2) endpoint_note="is not alive" ;;
+      *) endpoint_note="state is unreadable" ;;
+    esac
+    secondmate_health_quota_dead_unreachable "$id" "$meta" "$snapshot" "$endpoint_note" || return 1
   done
 }
 

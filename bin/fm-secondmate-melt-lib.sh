@@ -18,9 +18,14 @@
 # The default pane evidence threshold is two distinct pane snapshots containing
 # a 429, rate-limit, or out-of-quota marker for the same pinned model. Re-reading
 # one stale error screen never increments the counter. A quota snapshot can
-# trigger immediately. The default relaunch cooldown is one hour and is bound
-# to the live harness/model recorded in the marker, so an ordinary restart that
-# restores a different (still-dead) pin is not suppressed by the prior melt.
+# trigger immediately against a live endpoint even when pane text is empty. The
+# default relaunch cooldown is one hour and is bound to the live harness/model
+# recorded in the marker. The watcher writes that marker only for unsuccessful
+# attempts (no replacement, relaunch failure) or when a successful relaunch
+# could not update the still-recorded parent pin; a successful replacement with
+# an updated profile must not suppress later quota-dead detection. A bare or
+# mismatched marker never suppresses evaluation, so an ordinary restart that
+# restores a different (still-dead) pin is not suppressed by a prior melt.
 # Both constants are environment-overridable for tests and are documented here
 # so the watcher does not grow a second policy copy.
 #
@@ -67,7 +72,8 @@ fm_secondmate_melt_cooldown_write() { # <state-dir> <id> <harness> <model>
 
 # True only while a fresh marker names the same live harness/model. A bare or
 # mismatched marker never suppresses evaluation, so a restart onto a restored
-# dead pin can melt again inside the prior window.
+# dead pin can melt again inside the prior window. Callers should write the
+# marker only for the still-recorded pin after an unsuccessful attempt.
 fm_secondmate_melt_cooldown_active() { # <state-dir> <id> <harness> <model>
   local marker="$1/.secondmate-melt-cooldown-$2" harness=$3 model=$4
   local content recorded_harness recorded_model m now age
