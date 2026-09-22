@@ -120,9 +120,14 @@
 #                          threshold (local state/<id>.inbox, or remote via
 #                          inbox-health on state/parent-route/<id>.inbox); the
 #                          records remain untouched
-#   check: secondmate model melt: home=<id> old=<harness/model> new=<harness/model> why=<reason>
-#                          the recorded-live commander was quota/API-dead and
-#                          was replaced explicitly, or no safe replacement was available
+#   check: secondmate inbox backlog unavailable: mate=<id> [remote=<host>]
+#                          the same inbox could not be measured safely; one
+#                          durable check covers that unreadability episode
+#   check: secondmate model melt: home=<id> old=<harness/model> new=<harness/model|none> why=<reason>
+#                          the recorded commander pin was quota/API-dead; a live
+#                          endpoint was replaced explicitly, no safe replacement
+#                          was available, or an unreachable/unreadable endpoint
+#                          refused automatic relaunch after publishing the check
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> idle=<seconds>s
 #                          an actionable row in an endpoint-recorded local
 #                          secondmate home's durable wake queue did not advance

@@ -229,6 +229,7 @@ Cooldown is written only for unsuccessful attempts on the still-recorded dead pr
 When no quota-verified replacement is available, the gate still publishes one parent check and cools the dead pin rather than leaving the home silently stalled.
 The steering-backlog gate counts unhandled `*.msg` records in the local `state/<id>.inbox` or this remote route's `state/parent-route/<id>.inbox`.
 More than 20 records or an oldest record older than two hours creates one durable parent check for that backlog episode, including the count, oldest age, and newest-record sample.
+When the inbox path is unreadable or measurement fails, the gate publishes one durable unavailable check for that mate rather than treating the backlog as empty.
 `bin/fm-secondmate-melt-lib.sh` owns model-dead/profile decisions, `bin/fm-secondmate-inbox-lib.sh` owns measurement and thresholds, and `bin/fm-watch.sh` owns transport, relaunch, cooldown publication, and parent wakes.
 The alarm never moves or auto-handles steering records.
 
