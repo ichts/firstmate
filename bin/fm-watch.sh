@@ -116,8 +116,10 @@
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
 #   check: secondmate inbox backlog: mate=<id> count=<n> oldest_age=<seconds>s newest_ids=<ids>
-#                          the host-local secondmate steering inbox crossed the
-#                          count or age threshold; the records remain untouched
+#                          a secondmate steering inbox crossed the count or age
+#                          threshold (local state/<id>.inbox, or remote via
+#                          inbox-health on state/parent-route/<id>.inbox); the
+#                          records remain untouched
 #   check: secondmate model melt: home=<id> old=<harness/model> new=<harness/model> why=<reason>
 #                          the recorded-live commander was quota/API-dead and
 #                          was replaced explicitly, or no safe replacement was available

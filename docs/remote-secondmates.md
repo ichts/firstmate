@@ -220,10 +220,12 @@ The underlying `fm-on` transport never retries automatically, but `fm-send` retr
 Semantic callers preserve the route or pending request; an operation that is not idempotent requires same-host reconciliation rather than a blind resend, while an unconfirmed steer may be retried only through the correlation-preserving command described above.
 An unavailable remote home is projected as unknown and is never replaced by a local second mate.
 
-The primary watcher also owns two health gates for every recorded-live second mate.
-The commander-model gate samples quota-axi and repeated pane evidence, then uses an explicit relaunch profile: a quota-usable parent `config/secondmate-harness` pin first, otherwise the quota-usable `crew-dispatch.json` default profiles.
-It never selects a model named Sol or a quota-dead model, and the replacement model is always passed explicitly so the old pin cannot stick.
-The gate requires two distinct quota-error pane snapshots and ignores repeated sampling of one stale screen; it also uses a one-hour per-mate relaunch cooldown, while quota-axi exhaustion can trigger immediately.
+The primary watcher also owns two health gates for every recorded second mate, local or remote.
+The commander-model gate samples quota-axi and repeated live-pane evidence, then uses an explicit relaunch profile: a quota-usable parent `config/secondmate-harness` pin first, otherwise the quota-usable `crew-dispatch.json` default profiles.
+It never selects a model named Sol or a quota-dead model, unknown or unmeasured quota never licenses a replacement, and the replacement model is always passed explicitly so the old pin cannot stick.
+The gate requires two distinct quota-error pane snapshots and ignores repeated sampling of one stale screen; quota-axi exhaustion can trigger immediately.
+A successful or terminal melt cools only the live harness/model pair for one hour, so a restored dead pin can melt again inside that window while the same live pair cannot thrash.
+When no quota-verified replacement is available, the gate still publishes one parent check and cools the dead pin rather than leaving the home silently stalled.
 The steering-backlog gate counts unhandled `*.msg` records in the local `state/<id>.inbox` or this remote route's `state/parent-route/<id>.inbox`.
 More than 20 records or an oldest record older than two hours creates one durable parent check for that backlog episode, including the count, oldest age, and newest-record sample.
 `bin/fm-secondmate-melt-lib.sh` owns model-dead/profile decisions, `bin/fm-secondmate-inbox-lib.sh` owns measurement and thresholds, and `bin/fm-watch.sh` owns transport, relaunch, cooldown publication, and parent wakes.
@@ -288,6 +290,8 @@ bin/fm-test-run.sh tests/fm-remote-doctor.test.sh
 bin/fm-test-run.sh tests/fm-remote-herdr-guard.test.sh
 bin/fm-test-run.sh tests/fm-project-origin.test.sh
 bin/fm-test-run.sh tests/fm-secondmate-sync.test.sh
+bin/fm-test-run.sh tests/fm-secondmate-melt.test.sh
+bin/fm-test-run.sh tests/fm-secondmate-inbox.test.sh
 bin/fm-test-run.sh tests/fm-remote-reply.test.sh
 bin/fm-test-run.sh tests/fm-remote-backlog-handoff.test.sh
 bin/fm-test-run.sh tests/fm-remote-secondmate-lifecycle-e2e.test.sh
