@@ -29,10 +29,11 @@
 #   binds to one row through quota_row in
 #   bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
 #   reads its own account's row and an expanded provider with no row for the
-#   candidate is unmeasured, never blocked), and the spendPriority argmax over
-#   the eligible candidates. The model never sees quota, catalogs, approvals,
-#   confidence floors, `why`, or `use`. With no rules, it returns a non-clear
-#   result so firstmate keeps using the existing intake.
+#   candidate is unmeasured, never blocked), any declared quality preference
+#   filter, and the spendPriority argmax over the resulting pool. The model
+#   never sees quota, catalogs, approvals, confidence floors, `why`, or `use`.
+#   With no rules, it returns a non-clear result so firstmate keeps using the
+#   existing intake.
 #   docs/configuration.md "Crew dispatch profiles" owns the declared fields and
 #   "Typed dispatch resolution" owns this tool's operator contract.
 #
@@ -42,11 +43,15 @@
 #     model/latency_ms/tokens, rule (when excerpt) and confidence, probabilities
 #     fallback: <runner-up rule taken when the picked rule missed its own floor>
 #     reason: <why the status is not clear>
-#     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
+#     note: <quality preference active/inactive, unranked candidates, when present>
+#     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=..
+#       [prefer_quality=.. resetsAt=.. quality_reason=.. for marked profiles]
+#       -> eligible | eligible, unranked: <reason> | not eligible: <reason>
 #     profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
 #   clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
 #   ambiguous -> confidence below the floor; decide as today from the probabilities
-#   escalate  -> the rule requires captain approval, no candidate is rankable, or a genuine tie
+#   escalate  -> the rule requires captain approval, no candidate is rankable, a genuine
+#                tie, or declared quality profiles that did not qualify with no fallback
 #   error     -> API, network, response, or quota-axi failure; decide as today
 #   Every outcome exits 0 so an intake is never blocked by this tool.
 #   Exit 2 only for a usage or configuration error (unreadable brief, an
