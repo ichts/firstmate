@@ -984,6 +984,7 @@ This section is the single owner of the canonical schema and its per-field seman
 
 ```json
 {
+  "quality_preference": { "comfortable_percent": 50, "reset_within_hours": 72 },
   "rules": [
     {
       "when": "<natural-language condition describing a kind of task>",
@@ -991,7 +992,7 @@ This section is the single owner of the canonical schema and its per-field seman
       "min_confidence": 0.85,
       "floor": { "scope": "<quota-axi scope>", "min_percent": 20, "provider": "<quota-axi provider>" },
       "use": [
-        { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
+        { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "prefer_quality": true, "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
       ],
       "why": "<optional rationale that helps firstmate choose>"
     }
@@ -1010,7 +1011,21 @@ This section is the single owner of the canonical schema and its per-field seman
 | Rule `when` and `use` | Required for each rule. |
 | `use` and optional top-level `default` | Accept one profile object or a non-empty array of profile objects; the single-object form remains fully backward-compatible. |
 | Profile `harness` | Required in every profile. |
-| Profile `model` and `effort`; rule `why` | Optional. |
+| Profile `model`, `effort`, and `prefer_quality`; rule `why` | Optional. |
+| Top-level `quality_preference` | Optional, but required when any profile declares `prefer_quality: true`. |
+
+**Quality preference**
+
+`quality_preference.comfortable_percent` must be greater than zero and at most 100, and `reset_within_hours` must be greater than zero.
+After eligibility, reasoning-class fit, and completion runway have been established, a marked candidate activates the quality preference when its limiting applicable quota row either has at least `comfortable_percent` remaining or has positive remaining quota, `runway=through_reset`, and a reset within `reset_within_hours` of the snapshot time.
+
+- When at least one marked candidate activates, only activated marked candidates enter the final `spendPriority` ranking.
+- When marked candidates exist but none activate, only unmarked fallback candidates enter the ranking; if none remain, resolution escalates.
+- When no profile is marked, all eligible rankable candidates enter it as before.
+
+This lets a captain declare which concrete model is the quality choice without hard-coding model names in the router, while keeping `spendPriority` as the only ordering within the resulting pool.
+Unmarked paths, including Fable and separate visual-task rules, are unchanged.
+`quota-array-dispatch` is the single owner of this selection procedure, and the typed resolver applies the same procedure in code.
 
 **Fields applied only by typed resolution**
 
@@ -1111,9 +1126,9 @@ An absent rules file, a default-only file, or `rules: []` returns the non-clear 
 After the answer, code applies all remaining checks and ranking:
 
 - The confidence floor and the matched rule's `approval` and `floor`.
-- Each candidate's `provider` and `floor`.
+- Each candidate's `provider`, `floor`, and `prefer_quality`, plus the optional top-level `quality_preference`.
 - Every applicable account-wide and model/product row from one `quota-axi --json` snapshot.
-- The numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
+- The numeric `spendPriority` argmax over policy-filtered candidates, using each candidate's limiting row.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
 
@@ -1136,6 +1151,7 @@ No qualifying option, or two equally probable qualifying options, produces `ambi
 
 - Any applicable `exhausted_now` row or known zero bound makes that candidate ineligible, and a known profile-floor shortfall does the same before unrelated quota uncertainty is considered.
 - Missing or nonnumeric `spendPriority` evidence is never ranked, and every candidate is printed beside its evidence or the reason it was not rankable, including on ambiguous and approval-gated outcomes that emit no profile.
+- For a marked profile, the output also reports whether quality preference activated, the limiting reset timestamp when available, and the activation reason.
 - On the opted-in path, duplicate concrete profiles with the same harness, model, and effort inside one rule or the default array are configuration errors rather than ties.
 
 **Outcomes and exit status**
