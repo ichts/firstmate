@@ -1216,7 +1216,7 @@ secondmate_health_model_melt() {  # <id> <meta> <snapshot> <capture>
   model=$(fm_meta_get "$meta" model)
   [ -n "$harness" ] || return 0
   [ -n "$model" ] || return 0
-  fm_secondmate_melt_cooldown_active "$STATE" "$id" && return 0
+  fm_secondmate_melt_cooldown_active "$STATE" "$id" "$harness" "$model" && return 0
   reason=
   if [ -n "$snapshot" ]; then
     provider=$(fm_meta_get "$meta" provider)
@@ -1235,8 +1235,9 @@ secondmate_health_model_melt() {  # <id> <meta> <snapshot> <capture>
   if [ -z "$profile" ]; then
     reason="check: secondmate model melt: home=$id old=$old_description new=none why=$reason; no quota-verified replacement profile is available"
     fm_wake_append check "secondmate-model-melt-$id" "$reason" || return 1
-    : > "$STATE/.secondmate-melt-cooldown-$id" || return 1
+    fm_secondmate_melt_cooldown_write "$STATE" "$id" "$harness" "$model" || return 1
     wake "$reason"
+    return 0
   fi
   IFS=$'\t' read -r new_harness new_model new_effort source <<EOF
 $profile
@@ -1257,8 +1258,9 @@ EOF
   if [ "$rc" -ne 0 ]; then
     reason="check: secondmate model melt: home=$id old=$old_description new=$new_description why=$reason; relaunch failed: $(printf '%s\n' "$out" | sed -n '/./{s/[[:space:]]\{1,\}/ /g;p;q;}')"
     fm_wake_append check "secondmate-model-melt-$id" "$reason" || return 1
-    : > "$STATE/.secondmate-melt-cooldown-$id" || return 1
+    fm_secondmate_melt_cooldown_write "$STATE" "$id" "$harness" "$model" || return 1
     wake "$reason"
+    return 0
   fi
   if ! secondmate_health_update_profile_meta "$meta" "$new_harness" "$new_model" "$new_effort"; then
     reason="check: secondmate model melt: home=$id old=$old_description new=$new_description why=$reason; relaunch succeeded but the parent's profile record could not be updated"
@@ -1266,9 +1268,10 @@ EOF
     reason="check: secondmate model melt: home=$id old=$old_description new=$new_description why=$reason source=$source"
   fi
   fm_wake_append check "secondmate-model-melt-$id" "$reason" || return 1
-  : > "$STATE/.secondmate-melt-cooldown-$id" || return 1
+  fm_secondmate_melt_cooldown_write "$STATE" "$id" "$new_harness" "$new_model" || return 1
   rm -f "$STATE/.secondmate-melt-evidence-$id"
   wake "$reason"
+  return 0
 }
 
 secondmate_health_tick() {
@@ -1282,12 +1285,12 @@ secondmate_health_tick() {
     [ "$kind" = secondmate ] || continue
     id=${meta##*/}
     id=${id%.meta}
-    secondmate_health_inbox_alarm "$id" "$meta"
+    secondmate_health_inbox_alarm "$id" "$meta" || return 1
     capture=
     if ! capture=$(secondmate_health_capture "$id" "$meta"); then
       continue
     fi
-    secondmate_health_model_melt "$id" "$meta" "$snapshot" "$capture"
+    secondmate_health_model_melt "$id" "$meta" "$snapshot" "$capture" || return 1
   done
 }
 

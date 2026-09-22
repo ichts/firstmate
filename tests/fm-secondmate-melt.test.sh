@@ -92,11 +92,160 @@ FM_SECONDMATE_MELT_EVIDENCE_COUNT=2
   || fail "a healthy observation retained dead-model evidence"
 pass "pane evidence requires distinct errors and resets on a healthy observation"
 
-: > "$state/.secondmate-melt-cooldown-mate"
 FM_SECONDMATE_MELT_COOLDOWN_SECS=3600
-fm_secondmate_melt_cooldown_active "$state" mate \
-  || fail "a fresh cooldown marker did not suppress relaunch"
+fm_secondmate_melt_cooldown_write "$state" mate codex gpt-5.6-luna \
+  || fail "the cooldown marker for the replacement profile could not be written"
+fm_secondmate_melt_cooldown_active "$state" mate codex gpt-5.6-luna \
+  || fail "a fresh replacement cooldown did not suppress relaunch for that profile"
+! fm_secondmate_melt_cooldown_active "$state" mate pi zai-coding-cn/glm-5.3 \
+  || fail "a restored dead pin stayed suppressed by the replacement cooldown"
+: > "$state/.secondmate-melt-cooldown-mate"
+! fm_secondmate_melt_cooldown_active "$state" mate codex gpt-5.6-luna \
+  || fail "a bare legacy cooldown marker suppressed melt evaluation"
 FM_SECONDMATE_MELT_COOLDOWN_SECS=0
-! fm_secondmate_melt_cooldown_active "$state" mate \
+fm_secondmate_melt_cooldown_write "$state" mate codex gpt-5.6-luna \
+  || fail "the zero-second cooldown marker could not be rewritten"
+! fm_secondmate_melt_cooldown_active "$state" mate codex gpt-5.6-luna \
   || fail "the documented zero-second test override did not expire the cooldown"
-pass "the per-mate cooldown prevents relaunch thrash"
+pass "cooldown is bound to the live harness/model and expires on override"
+
+watch_home=$(fm_test_tmproot fm-secondmate-melt-watch)
+mkdir -p "$watch_home/state" "$watch_home/config" "$watch_home/bin"
+printf '%s\n' 'pi zai-coding-cn/glm-5.3 high' > "$watch_home/config/secondmate-harness"
+cat > "$watch_home/config/crew-dispatch.json" <<'JSON'
+{"default":[]}
+JSON
+printf '%s\n' \
+  'kind=secondmate' \
+  'harness=pi' \
+  'model=zai-coding-cn/glm-5.3' \
+  'effort=high' \
+  'provider=pi' \
+  > "$watch_home/state/mate.meta"
+printf '%s\n' "$quota" > "$watch_home/state/quota.json"
+cat > "$watch_home/bin/fm-control.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'unexpected relaunch after a terminal melt path\n' >&2
+exit 97
+EOF
+chmod +x "$watch_home/bin/fm-control.sh"
+FM_SECONDMATE_MELT_COOLDOWN_SECS=3600
+export FM_SECONDMATE_MELT_COOLDOWN_SECS
+(
+  FM_HOME="$watch_home"
+  FM_STATE_OVERRIDE="$watch_home/state"
+  FM_CONFIG_OVERRIDE="$watch_home/config"
+  FM_ROOT_OVERRIDE="$ROOT"
+  FM_SECONDMATE_QUOTA_SNAPSHOT="$watch_home/state/quota.json"
+  FM_SECONDMATE_MELT_COOLDOWN_SECS=3600
+  export FM_HOME FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE FM_ROOT_OVERRIDE FM_SECONDMATE_QUOTA_SNAPSHOT FM_SECONDMATE_MELT_COOLDOWN_SECS
+  # shellcheck source=bin/fm-watch.sh
+  . "$ROOT/bin/fm-watch.sh"
+  SCRIPT_DIR="$watch_home/bin"
+  PATH="$watch_home/bin:$PATH"
+  export PATH
+  wakes=0
+  fm_wake_append() { printf '%s\n' "$3" >> "$watch_home/state/wake.log"; }
+  wake() { wakes=$((wakes + 1)); printf '%s\n' "$1" >> "$watch_home/state/wake-calls.log"; }
+  secondmate_health_model_melt mate "$watch_home/state/mate.meta" "$(cat "$watch_home/state/quota.json")" 'ready' \
+    || exit 11
+  [ "$wakes" -eq 1 ] || exit 12
+  grep -F 'new=none' "$watch_home/state/wake-calls.log" >/dev/null || exit 13
+  fm_secondmate_melt_cooldown_active "$watch_home/state" mate pi zai-coding-cn/glm-5.3 || exit 14
+) || fail "a no-replacement melt path fell through or skipped the dead-model cooldown"
+pass "no-replacement melt is terminal and cools only the live dead pin"
+
+(
+  FM_HOME="$watch_home"
+  FM_STATE_OVERRIDE="$watch_home/state"
+  FM_CONFIG_OVERRIDE="$watch_home/config"
+  FM_ROOT_OVERRIDE="$ROOT"
+  export FM_HOME FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE FM_ROOT_OVERRIDE
+  # shellcheck source=bin/fm-watch.sh
+  . "$ROOT/bin/fm-watch.sh"
+  SECONDMATE_HEALTH_INTERVAL_SECS=0
+  rm -f "$watch_home/state/.secondmate-health-last"
+  secondmate_health_inbox_alarm() { return 7; }
+  secondmate_health_model_melt() { return 0; }
+  if secondmate_health_tick; then
+    exit 21
+  fi
+) || fail "secondmate_health_tick swallowed an inbox gate bookkeeping failure"
+(
+  FM_HOME="$watch_home"
+  FM_STATE_OVERRIDE="$watch_home/state"
+  FM_CONFIG_OVERRIDE="$watch_home/config"
+  FM_ROOT_OVERRIDE="$ROOT"
+  export FM_HOME FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE FM_ROOT_OVERRIDE
+  # shellcheck source=bin/fm-watch.sh
+  . "$ROOT/bin/fm-watch.sh"
+  SECONDMATE_HEALTH_INTERVAL_SECS=0
+  rm -f "$watch_home/state/.secondmate-health-last"
+  secondmate_health_inbox_alarm() { return 0; }
+  secondmate_health_capture() { printf 'pane\n'; }
+  secondmate_health_model_melt() { return 9; }
+  if secondmate_health_tick; then
+    exit 23
+  fi
+) || fail "secondmate_health_tick swallowed a melt gate bookkeeping failure"
+pass "health tick fails closed on inbox and melt bookkeeping errors"
+
+printf '%s\n' \
+  'kind=secondmate' \
+  'harness=pi' \
+  'model=zai-coding-cn/glm-5.3' \
+  'effort=high' \
+  'provider=pi' \
+  > "$watch_home/state/mate.meta"
+rm -f "$watch_home/state/.secondmate-melt-cooldown-mate" \
+  "$watch_home/state/.secondmate-melt-evidence-mate" \
+  "$watch_home/state/success-wake.log" \
+  "$watch_home/state/success-wake-calls.log" \
+  "$watch_home/state/relaunch.log"
+cat > "$watch_home/config/crew-dispatch.json" <<'JSON'
+{"default":[{"harness":"codex","model":"gpt-5.6-luna","effort":"max","provider":"codex"}]}
+JSON
+cat > "$watch_home/bin/fm-control.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'relaunch ok\n'
+exit 0
+EOF
+chmod +x "$watch_home/bin/fm-control.sh"
+(
+  FM_HOME="$watch_home"
+  FM_STATE_OVERRIDE="$watch_home/state"
+  FM_CONFIG_OVERRIDE="$watch_home/config"
+  FM_ROOT_OVERRIDE="$ROOT"
+  FM_SECONDMATE_MELT_COOLDOWN_SECS=3600
+  export FM_HOME FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE FM_ROOT_OVERRIDE FM_SECONDMATE_MELT_COOLDOWN_SECS
+  # shellcheck source=bin/fm-watch.sh
+  . "$ROOT/bin/fm-watch.sh"
+  SCRIPT_DIR="$watch_home/bin"
+  PATH="$watch_home/bin:$PATH"
+  export PATH
+  fm_wake_append() { printf '%s\n' "$3" >> "$watch_home/state/success-wake.log"; }
+  wake() { printf '%s\n' "$1" >> "$watch_home/state/success-wake-calls.log"; }
+  secondmate_health_model_melt mate "$watch_home/state/mate.meta" "$(cat "$watch_home/state/quota.json")" 'ready' \
+    || exit 31
+  fm_secondmate_melt_cooldown_active "$watch_home/state" mate codex gpt-5.6-luna || exit 32
+  ! fm_secondmate_melt_cooldown_active "$watch_home/state" mate pi zai-coding-cn/glm-5.3 || exit 33
+  printf '%s\n' \
+    'kind=secondmate' \
+    'harness=pi' \
+    'model=zai-coding-cn/glm-5.3' \
+    'effort=high' \
+    'provider=pi' \
+    > "$watch_home/state/mate.meta"
+  relaunches=0
+  cat > "$watch_home/bin/fm-control.sh" <<'INNER'
+#!/usr/bin/env bash
+echo relaunch-after-restore >> "${FM_STATE_OVERRIDE}/relaunch.log"
+printf 'relaunch ok\n'
+exit 0
+INNER
+  chmod +x "$watch_home/bin/fm-control.sh"
+  secondmate_health_model_melt mate "$watch_home/state/mate.meta" "$(cat "$watch_home/state/quota.json")" 'ready' \
+    || exit 34
+  grep -F 'relaunch-after-restore' "$watch_home/state/relaunch.log" >/dev/null || exit 35
+) || fail "a restored dead pin stayed silent under the replacement cooldown"
+pass "successful melt cools the replacement and remelts a restored dead pin"

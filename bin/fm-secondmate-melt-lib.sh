@@ -18,7 +18,9 @@
 # The default pane evidence threshold is two distinct pane snapshots containing
 # a 429, rate-limit, or out-of-quota marker for the same pinned model. Re-reading
 # one stale error screen never increments the counter. A quota snapshot can
-# trigger immediately. The default relaunch cooldown is one hour.
+# trigger immediately. The default relaunch cooldown is one hour and is bound
+# to the live harness/model recorded in the marker, so an ordinary restart that
+# restores a different (still-dead) pin is not suppressed by the prior melt.
 # Both constants are environment-overridable for tests and are documented here
 # so the watcher does not grow a second policy copy.
 #
@@ -57,9 +59,29 @@ fm_secondmate_melt_stat_mtime() {
   fi
 }
 
-fm_secondmate_melt_cooldown_active() { # <state-dir> <id>
-  local marker="$1/.secondmate-melt-cooldown-$2" m now age
+fm_secondmate_melt_cooldown_write() { # <state-dir> <id> <harness> <model>
+  local marker="$1/.secondmate-melt-cooldown-$2" harness=$3 model=$4
+  [ -n "$harness" ] && [ -n "$model" ] || return 1
+  printf '%s\t%s\n' "$harness" "$model" > "$marker"
+}
+
+# True only while a fresh marker names the same live harness/model. A bare or
+# mismatched marker never suppresses evaluation, so a restart onto a restored
+# dead pin can melt again inside the prior window.
+fm_secondmate_melt_cooldown_active() { # <state-dir> <id> <harness> <model>
+  local marker="$1/.secondmate-melt-cooldown-$2" harness=$3 model=$4
+  local content recorded_harness recorded_model m now age
+  [ -n "$harness" ] && [ -n "$model" ] || return 1
   [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  content=$(cat "$marker" 2>/dev/null || true)
+  case "$content" in
+    *$'\t'*) ;;
+    *) return 1 ;;
+  esac
+  recorded_harness=${content%%$'\t'*}
+  recorded_model=${content#*$'\t'}
+  recorded_model=${recorded_model%%$'\n'*}
+  [ "$recorded_harness" = "$harness" ] && [ "$recorded_model" = "$model" ] || return 1
   m=$(fm_secondmate_melt_stat_mtime "$marker") || return 1
   now=$(date +%s)
   case "$m" in
