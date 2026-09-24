@@ -717,6 +717,19 @@ The sweep must finish inside `FM_CHECK_TIMEOUT` (default 30), because a run the 
 So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Host hygiene (task identity, janitor, load alarm)
+
+Workers start dev servers, headless browsers, temporary servers, and Simulators while testing, and a busy shared host (such as a Mac mini carrying remote second mates) slows every later test when those outlive the task.
+Three layers keep a host clean, and each script's header owns its exact rules and flags.
+
+- Task cleanup: every ship and scout worker carries a home-scoped task identity in its environment, and `bin/fm-teardown.sh` stops every process carrying it, plus their descendants, wherever they run, then shuts down any Simulator only that task claims.
+  [`bin/fm-task-proc-lib.sh`](../bin/fm-task-proc-lib.sh) owns the identity, how processes are attributed to it, and its limits.
+- Hourly janitor: [`bin/fm-host-janitor.sh`](../bin/fm-host-janitor.sh) finds leftovers no live task or long-lived process owns and that are older than a minimum age (default 3 hours), and never touches ego, a normal Google Chrome window, Xcode, herdr, tmux, or Pi.
+  It defaults to a dry run; review one before installing its hourly `--apply` launch agent with `--install` on the host itself.
+  Each run is logged to that home's `state/host-janitor.log`, which stays bounded.
+- Load alarm: `bin/fm-host-load-check.sh arm --host <ssh-target>` ([header](../bin/fm-host-load-check.sh)) registers a watcher check in the home that should be told, which wakes once when the host's 1-, 5-, and 15-minute load averages all stay above a threshold (default 30) for a window (default 30 minutes), and re-arms after the load recovers.
+  `disarm` retires it.
+
 ## Mail plane (.env)
 
 The mail plane (bin/fm-mail.sh) reads unseen IMAP messages and sends one SMTP message.
@@ -1164,10 +1177,11 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
-FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
+FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-task-proc-lib.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh exports into ship and scout panes, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set
+FM_TASK_STATE_DIR=      # internal home-scoped half of the task identity fm-spawn.sh exports beside FM_TASK_ID (plus SIMCTL_CHILD_/TEST_RUNNER_ copies), never set by hand; bin/fm-task-proc-lib.sh owns how teardown and fm-host-janitor.sh attribute processes by it
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline
