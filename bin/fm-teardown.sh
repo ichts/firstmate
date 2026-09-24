@@ -312,6 +312,18 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+#   Fix 4 - reap by task identity. Dev servers, headless browsers, and temp
+#     servers a worker starts from /tmp or elsewhere escape Fix 2's cwd roots
+#     (observed 2026-09-24 on a shared Mac mini: days-old next dev servers,
+#     headless Chrome, and python http.server processes pinning load at 60+).
+#     For every ship or scout, reap_task_identity_processes TERMs, then KILLs
+#     after a grace period (FM_TASK_PROC_GRACE_SECS, default 5), every process
+#     carrying this task's home-scoped identity plus its descendants, and
+#     shuts down any booted Simulator only this task claims; it prints each
+#     pid it signals. bin/fm-task-proc-lib.sh owns the identity, attribution,
+#     and its limits. It never signals teardown itself, its ancestors, another
+#     task's or home's processes, or an unmarked process. Best effort: a
+#     survivor warns without blocking.
 # After Fix 1 and Fix 2, when config/pipeline-spend opts this home in, a ship
 # task whose local copy this teardown owns has its no-mistakes pipeline spend
 # recorded by bin/fm-pipeline-spend.sh, which owns the attribution and the
@@ -385,6 +397,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-task-proc-lib.sh
+. "$SCRIPT_DIR/fm-task-proc-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -2194,23 +2208,7 @@ EOF
 }
 
 task_process_identity() {  # <pid>
-  local pid=$1 proc_root stat_line starttime value
-  local -a stat_fields
-  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
-  if [ -r "$proc_root/$pid/stat" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
-    read -r -a stat_fields <<< "${stat_line##*)}"
-    [ "${#stat_fields[@]}" -ge 20 ] || return 1
-    starttime=${stat_fields[19]}
-    case "$starttime" in ''|*[!0-9]*) return 1 ;; esac
-    printf 'starttime=%s\n' "$starttime"
-    return 0
-  fi
-  value=$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null) || return 1
-  value=$(fm_nm_trim "$value")
-  [ -n "$value" ] || return 1
-  case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
-  printf 'lstart=%s\n' "$value"
+  fm_task_proc_identity "$1"
 }
 
 task_process_identity_matches() {  # <pid> <identity>
@@ -2384,6 +2382,40 @@ EOF
   [ -z "$TASK_PIDS" ] && return 0
   echo "REFUSED: leaked $label processes for $ID remain after $max_passes reap attempts; preserving the worktree/tasktmp for manual inspection or retry." >&2
   return 1
+}
+
+# Fix 4 (see script header): reap every process carrying this task's identity
+# (bin/fm-task-proc-lib.sh) and its descendants, wherever it runs - dev
+# servers, headless browsers, and temp servers started under /tmp are outside
+# the worktree and tasktmp roots Fix 2 scans - then shut down any Simulator
+# only this task claims. Best effort: a survivor or an unreadable process
+# table warns but never blocks the cleanup, because nothing here guards
+# unlanded work.
+reap_task_identity_processes() {
+  local state_dir snap pids sims udid
+  state_dir=$(cd "$STATE" 2>/dev/null && pwd -P) || return 0
+  case "$state_dir" in *[[:space:]]*)
+    echo "warning: state dir contains whitespace; cannot reap task-marked processes for $ID" >&2
+    return 0
+    ;;
+  esac
+  if ! snap=$(fm_task_proc_snapshot); then
+    echo "warning: cannot read the process table; task-marked processes for $ID were not reaped" >&2
+    return 0
+  fi
+  sims=$(printf '%s\n' "$snap" | fm_task_proc_claimed_sims "$ID" "$state_dir")
+  pids=$(printf '%s\n' "$snap" | fm_task_proc_claimed_pids "$ID" "$state_dir" "$$")
+  if [ -n "$pids" ]; then
+    echo "teardown: reaping task-marked process(es) for $ID: $(printf '%s' "$pids" | tr '\n' ' ')" >&2
+    # shellcheck disable=SC2086 # pids are validated digits, one per line
+    fm_task_proc_terminate "teardown: task $ID" "${FM_TASK_PROC_GRACE_SECS:-5}" $pids \
+      || echo "warning: some task-marked processes for $ID survived teardown" >&2
+  fi
+  for udid in $sims; do
+    fm_task_proc_sim_shutdown "teardown: task $ID" "$udid" \
+      || echo "warning: simulator $udid claimed by $ID could not be shut down" >&2
+  done
+  return 0
 }
 
 require_orca_worktree_path_match() {
@@ -3654,6 +3686,9 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
+fi
+if [ "$KIND" != secondmate ]; then
+  reap_task_identity_processes
 fi
 if [ "$KIND" = ship ] && teardown_owns_worktree && [ -e "$CONFIG/pipeline-spend" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
