@@ -3552,6 +3552,89 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
+# Fix 4: processes a worker started OUTSIDE its worktree - a /tmp
+# http.server and a child it spawned with the marker stripped - are reaped by
+# task identity, while an unmarked process, another task's process, a
+# same-id process of another home, and a marked shared daemon all survive.
+test_task_marked_processes_are_reaped_anywhere() {
+  local case_dir rc state_dir other_state srv_dir pids pid server child control other_task other_home shared
+  case_dir=$(make_case task-identity-reap)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  state_dir=$(cd "$case_dir/state" && pwd -P)
+  mkdir -p "$case_dir/other-home-state"
+  other_state=$(cd "$case_dir/other-home-state" && pwd -P)
+  srv_dir=$(mktemp -d /tmp/fm-idreap.XXXXXX)
+  cat > "$srv_dir/server.py" <<'PY'
+import http.server, os, subprocess, sys
+env = {k: v for k, v in os.environ.items() if not k.startswith("FM_TASK")}
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], env=env)
+with open(sys.argv[1], "w") as f:
+    f.write("%d %d\n" % (os.getpid(), child.pid))
+http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=0, bind="127.0.0.1")
+PY
+  ( cd "$srv_dir" && FM_TASK_ID=task-x1 FM_TASK_STATE_DIR="$state_dir" \
+      exec python3 server.py "$srv_dir/pids" >/dev/null 2>&1 ) &
+  disown
+  ( cd "$srv_dir" && exec python3 -c 'import time; time.sleep(300)' ) &
+  control=$!
+  disown
+  ( cd "$srv_dir" && FM_TASK_ID=task-x2 FM_TASK_STATE_DIR="$state_dir" \
+      exec python3 -c 'import time; time.sleep(300)' ) &
+  other_task=$!
+  disown
+  ( cd "$srv_dir" && FM_TASK_ID=task-x1 FM_TASK_STATE_DIR="$other_state" \
+      exec python3 -c 'import time; time.sleep(300)' ) &
+  other_home=$!
+  disown
+  # A shared daemon the worker merely happened to start first is protected.
+  ( cd "$srv_dir" && FM_TASK_ID=task-x1 FM_TASK_STATE_DIR="$state_dir" \
+      exec python3 -c 'import time; time.sleep(300)' no-mistakes daemon run ) &
+  shared=$!
+  disown
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$srv_dir/pids" ] && break
+    sleep 0.2
+  done
+  pids=$(cat "$srv_dir/pids" 2>/dev/null) || pids=
+  server=${pids%% *}
+  child=${pids##* }
+  child=${child%$'\n'}
+  if [ -z "$server" ] || ! kill -0 "$server" 2>/dev/null; then
+    fail "task-identity-reap: marked server did not start"
+  fi
+  kill -0 "$child" 2>/dev/null || fail "task-identity-reap: server child did not start"
+  # macOS withholds the environment of Apple platform binaries; a platform
+  # python3 would make this case vacuous, so prove the marker is readable.
+  # shellcheck source=bin/fm-task-proc-lib.sh disable=SC1091
+  ( . "$ROOT/bin/fm-task-proc-lib.sh"; fm_task_proc_markers ) | grep -q "^$server	task-x1	" \
+    || fail "task-identity-reap: this host cannot read the marked server's environment"
+
+  rc=0
+  FM_TASK_PROC_GRACE_SECS=2 run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  local survived=""
+  for pid in "$server" "$child"; do
+    if kill -0 "$pid" 2>/dev/null && ! ps -p "$pid" -o stat= | grep -q Z; then
+      survived="$survived $pid"
+    fi
+  done
+  local lost=""
+  for pid in "$control" "$other_task" "$other_home" "$shared"; do
+    kill -0 "$pid" 2>/dev/null || lost="$lost $pid"
+  done
+  kill -KILL "$server" "$child" "$control" "$other_task" "$other_home" "$shared" 2>/dev/null || true
+  rm -rf "$srv_dir"
+  expect_code 0 "$rc" "task-identity-reap: teardown should succeed"
+  [ -z "$survived" ] || fail "task-identity-reap: task-marked processes survived teardown:$survived"
+  [ -z "$lost" ] || fail "task-identity-reap: teardown killed unmarked, other-task, other-home, or protected processes:$lost"
+  assert_grep "reaping task-marked process" "$case_dir/stderr" \
+    "task-identity-reap: teardown did not report the task-marked reap"
+  assert_grep "TERM pid=$server" "$case_dir/stderr" \
+    "task-identity-reap: teardown did not name the reaped server"
+  pass "teardown reaps a task-marked /tmp server and its child anywhere, sparing unmarked, other-task, other-home, and protected processes"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -3967,6 +4050,7 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
+test_task_marked_processes_are_reaped_anywhere
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
