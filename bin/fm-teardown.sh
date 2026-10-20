@@ -83,10 +83,11 @@
 # name a slot a DIFFERENT live task now holds. Cleanup kills every process under
 # that path and hard-resets it before returning it, so releasing a slot that is
 # not genuinely this task's destroys another worker's live work. Before the first
-# cleanup step, teardown verifies record exclusivity: no OTHER task record in
-# this home or any locally registered Firstmate home may name the same live path
-# in its worktree= or home=. One live path with two task records is the reuse
-# collision itself, whichever record is stale.
+# cleanup step, teardown reads the positive slot-owner claim first. If it names
+# a different task, only this record can be retired, after proving its own
+# recorded branch landed without reading or changing the occupied worktree.
+# Otherwise record exclusivity is required: no OTHER task record in this home
+# or any locally registered Firstmate home may name that live path.
 # That scan alone cannot prove THIS record is the current owner, because the task
 # that took the slot next may leave no record it can reach - its own worker may
 # have exited and its record been cleaned up, or it may live in a home this
@@ -98,11 +99,11 @@
 # proof of reassignment: the slot is no longer this task's, so teardown warns,
 # names the claimant, and then finishes only this task's own cleanup - endpoint,
 # status, records, checks, backlog - while every step that would read or touch
-# that slot is skipped: no process kill under it, no dirty or landed-work
-# inspection of it, no branch or hook removal in it, no Treehouse return, and
-# never the other task's claim. Skipping the inspection discards nothing of this
-# task's: whatever unlanded work it had in that slot was already destroyed when
-# the pool handed the slot on. Refusing instead would strand the record, because
+# that slot is skipped: no process kill under it, no git or hook operation in it,
+# no Treehouse return, and never the other task's claim. The recorded branch
+# must still be proved landed from the project repository and forge; a missing
+# branch, open PR, or inconclusive proof refuses, even with --force. Refusing
+# every reassigned record would strand landed records, because
 # bin/fm-backend.sh's endpoint validation refuses an empty or missing worktree=
 # unconditionally, so there is no line an operator could clear to get past it.
 # A claim that cannot be read proves nothing either way and refuses; inspect or
@@ -2319,7 +2320,7 @@ require_exclusive_worktree_slot_record() {
         [ "$other_slot" = "$slot" ] || continue
         echo "REFUSED: task $record_id's recorded worktree $slot is also task $other_id's recorded $field." >&2
         echo "Returning that pool slot would kill $other_id's processes and reset its copy, so nothing was changed - not even with --force." >&2
-        echo "Reconcile whichever record is wrong (bin/fm-crew-state.sh $record_id; bin/fm-crew-state.sh $other_id), then re-run teardown." >&2
+        echo "Slot owner is ${FM_TREEHOUSE_SLOT_OWNER_ID:-unknown}; record-only teardown is available only when the readable claim positively names a different task and this record's branch is landed. Reconcile $record_id and $other_id, then retry." >&2
         return 1
       done
     done
@@ -2335,8 +2336,9 @@ require_exclusive_task_worktree_slot() {
 # Positive slot ownership, read from the claim the task that took the slot wrote
 # into the slot itself (bin/fm-wake-lib.sh owns the claim and its states).
 #
-# The record scan above proves that no OTHER task record names this slot. It
-# cannot prove that THIS record is not the stale one, because the task that took
+# When the claim does not identify another task, the record scan proves that
+# no OTHER task record names this slot. It cannot prove that THIS record is not
+# the stale one, because the task that took
 # the slot next may leave no record this scan can reach: its own worker may have
 # exited and its record been cleaned up, or it may belong to a home this machine
 # does not register. The claim closes that gap from the other side - it names the
@@ -2345,9 +2347,9 @@ require_exclusive_task_worktree_slot() {
 # reassigned after this record was written.
 #
 # A claim naming another task does not refuse: it means the slot is no longer
-# this task's, so the record's own cleanup proceeds and every slot step is
-# skipped (see the script header for why refusing would strand the record and
-# why skipping discards nothing). Returns TEARDOWN_SLOT_REASSIGNED_RC for that
+# this task's, so the record's own cleanup proceeds only after the recorded
+# branch is proved landed. Every slot step is skipped. Returns
+# TEARDOWN_SLOT_REASSIGNED_RC for that
 # state so each caller gates its slot steps on one determination; the claimant
 # stays in FM_TREEHOUSE_SLOT_OWNER_ID and FM_TREEHOUSE_SLOT_OWNER_HOME.
 #
@@ -2368,7 +2370,7 @@ require_owned_worktree_slot_record() {  # <task-id> <worktree>
   esac
   marker=$(fm_treehouse_slot_owner_marker "$worktree" 2>/dev/null) || marker="beside $worktree"
   echo "REFUSED: task $record_id's recorded worktree $worktree carries a slot-owner claim that cannot be read, so the slot cannot be proved to still be this task's; nothing was changed - not even with --force." >&2
-  echo "Inspect or repair the claim file at $marker (task= and home= lines), then re-run teardown." >&2
+  echo "Slot owner is unknown; record-only teardown requires a readable claim positively naming a different task and proof this record's branch landed. Inspect or repair $marker (task= and home= lines), then retry." >&2
   return 1
 }
 
@@ -2396,6 +2398,51 @@ require_owned_task_worktree_slot() {
 
 teardown_owns_worktree() {
   [ "$TEARDOWN_SLOT_REASSIGNED" != 1 ]
+}
+
+# A reassigned slot contains another task's HEAD and index. Only the recorded
+# branch in the project repository can prove this ship's committed work landed.
+# Do not fetch, inspect, or otherwise invoke git inside the occupied slot.
+require_record_only_branch_landed() {
+  local branch ref head default pr view state pr_head project_path slot_path
+  [ "$KIND" = ship ] || return 0  # Scouts have a separate report completion gate.
+  branch=$(fm_meta_get "$META" branch)
+  project_path=$(canonical_existing_dir "$PROJ") || project_path=
+  slot_path=$(teardown_live_slot_path) || slot_path=
+  if [ -z "$branch" ] || [ -z "$project_path" ] || [ "$project_path" = "$slot_path" ] \
+      || ! git check-ref-format "refs/heads/$branch" >/dev/null 2>&1; then
+    echo "REFUSED: record-only teardown of $ID (slot owner $TEARDOWN_SLOT_REASSIGNED_TO) cannot identify its own branch in a separate project repository; nothing was changed." >&2
+    return 1
+  fi
+  ref="refs/heads/$branch"
+  head=$(git -C "$project_path" rev-parse --verify "$ref^{commit}" 2>/dev/null) || {
+    echo "REFUSED: record-only teardown of $ID (slot owner $TEARDOWN_SLOT_REASSIGNED_TO) cannot prove recorded branch $branch landed; nothing was changed." >&2
+    return 1
+  }
+  if [ "$MODE" = local-only ]; then
+    default=$(default_branch) || default=
+    if [ -n "$default" ] && git -C "$project_path" merge-base --is-ancestor "$head" "$default" 2>/dev/null; then
+      return 0
+    fi
+  else
+    pr=$PR_URL
+    if [ -z "$pr" ]; then
+      pr=$(cd "$project_path" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null \
+        | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1) || pr=
+    fi
+    if [ -n "$pr" ]; then
+      view=$(cd "$project_path" && gh pr view "$pr" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || view=
+      state=${view%%$'\t'*}
+      pr_head=${view#*$'\t'}
+      if [ "$state" = MERGED ] && [ "$pr_head" != "$view" ] && [ -n "$pr_head" ] \
+          && { [ "$head" = "$pr_head" ] \
+            || git -C "$project_path" merge-base --is-ancestor "$head" "$pr_head" 2>/dev/null; }; then
+        return 0
+      fi
+    fi
+  fi
+  echo "REFUSED: record-only teardown of $ID (slot owner $TEARDOWN_SLOT_REASSIGNED_TO) cannot prove branch $branch landed; preserve this record and the other task's slot." >&2
+  return 1
 }
 
 firstmate_home_has_treehouse_slot() {
@@ -3264,8 +3311,12 @@ remove_secondmate_registry_entry() {
   return "$rc"
 }
 
-require_exclusive_task_worktree_slot || exit 1
 require_owned_task_worktree_slot || exit 1
+if teardown_owns_worktree; then
+  require_exclusive_task_worktree_slot || exit 1
+else
+  require_record_only_branch_landed || exit 1
+fi
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
@@ -3740,7 +3791,7 @@ else
 fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
-if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
+if teardown_owns_worktree && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 # A secondmate retirement may remove the home containing an overridden control
