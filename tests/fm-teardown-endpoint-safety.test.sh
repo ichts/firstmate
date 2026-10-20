@@ -893,12 +893,17 @@ test_remote_layout_homes_serialize_on_one_project_lock() {
 write_merged_pr_fixture() {  # <case> <branch> [head]
   local dir=$1 branch=$2 head=${3:-}
   [ -n "$head" ] || head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
+  cat > "$dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = pr ] && [ "$2" = list ] || exit 1
+printf '%s\n' '  85,merged'
+SH
   cat > "$dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 [ "$1" = pr ] && [ "$2" = view ] || exit 1
-printf 'MERGED\t%s\n' "${FM_TEST_PR_HEAD:?}"
+printf 'MERGED\t%s\thttps://example.invalid/owner/repo/pull/85\n' "${FM_TEST_PR_HEAD:?}"
 SH
-  chmod +x "$dir/fakebin/gh"
+  chmod +x "$dir/fakebin/gh-axi" "$dir/fakebin/gh"
   printf '%s\n' "$head" > "$dir/pr-head"
 }
 
