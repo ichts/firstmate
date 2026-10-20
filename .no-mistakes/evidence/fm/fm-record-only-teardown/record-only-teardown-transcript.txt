@@ -1,0 +1,25 @@
+=== SUCCESS: retire landed stale record from a foreign-owned shared slot ===
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /Users/ichts/.no-mistakes/worktrees/7bf215c2d2ab/01M5DG13RPDRV475MQ6V9XZHZA/.pi/extensions/fm-primary-turnend-guard.ts -e /Users/ichts/.no-mistakes/worktrees/7bf215c2d2ab/01M5DG13RPDRV475MQ6V9XZHZA/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+warning: task old-task's recorded worktree /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/pool/1/project was reassigned to task new-task (home /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/home), which claimed that pool slot after this record was written; that slot is no longer old-task's, so its processes, copy, and claim are left untouched and only old-task's own cleanup runs.
+teardown old-task complete (window firstmate:fm-old-task; pool slot /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/worktree left to task new-task (home /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/home), which it was reassigned to)
+Backlog: old-task is closed in /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+stale record exists: no
+owner record exists: yes
+owner claim: task=new-task home=/private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/home 
+neighbor file: neighbor data
+treehouse return invoked: no
+backlog completion: tasks-axi <done> <old-task> <--pr> <https://example.invalid/owner/repo/pull/85> <--file> </private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-record-only/home/data/backlog.md>
+=== SAFETY: --force still refuses an unlanded stale branch ===
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+warning: task old-task's recorded worktree /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-unlanded/pool/1/project was reassigned to task new-task (home /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.1OPlr0/shared-slot-unlanded/home), which claimed that pool slot after this record was written; that slot is no longer old-task's, so its processes, copy, and claim are left untouched and only old-task's own cleanup runs.
+REFUSED: record-only teardown of old-task (slot owner new-task) cannot prove branch fm/old-task landed; preserve this record and the other task's slot.
+stale record preserved: yes
+owner record preserved: yes
+treehouse return invoked: no
+ok - fm-teardown: shared slot record-only cleanup requires a landed recorded branch and positive foreign claim
