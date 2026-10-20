@@ -63,6 +63,7 @@ run_unforced_case() {  # <case> <id>
 
 run_case() {  # <case> <id>
   local dir=$1 id=$2
+  FM_TEST_PR_HEAD=$(cat "$dir/pr-head" 2>/dev/null || true) \
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
   FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
     "$TEARDOWN" "$id" --force
@@ -889,9 +890,9 @@ test_remote_layout_homes_serialize_on_one_project_lock() {
   pass "Treehouse project locking still serializes two homes across the remote-seeded boundary"
 }
 
-write_merged_pr_fixture() {  # <case> <branch>
-  local dir=$1 branch=$2 head
-  head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
+write_merged_pr_fixture() {  # <case> <branch> [head]
+  local dir=$1 branch=$2 head=${3:-}
+  [ -n "$head" ] || head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
   cat > "$dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 [ "$1" = pr ] && [ "$2" = view ] || exit 1
@@ -1011,11 +1012,21 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
 }
 
 test_shared_slot_record_only_requires_landed_branch() {
-  local dir id=old-task other=new-task rc before after new_head
+  local dir id=old-task other=new-task rc before after new_head remote_head remote_tree
   dir=$(make_case shared-slot-record-only)
   mark_case_as_treehouse_pool "$dir"
   git -C "$dir/project" branch "fm/$id"
-  write_merged_pr_fixture "$dir" "fm/$id"
+  git init -q --bare "$dir/remote.git"
+  git -C "$dir/project" remote add origin "$dir/remote.git"
+  git -C "$dir/project" push -q origin HEAD:refs/heads/main
+  remote_tree=$(git --git-dir="$dir/remote.git" rev-parse 'refs/heads/main^{tree}')
+  remote_head=$(printf 'merged remotely\n' \
+    | git --git-dir="$dir/remote.git" -c user.name=test -c user.email=test@example.invalid \
+      commit-tree "$remote_tree" -p "$(git --git-dir="$dir/remote.git" rev-parse refs/heads/main)")
+  git --git-dir="$dir/remote.git" update-ref refs/pull/85/head "$remote_head"
+  write_merged_pr_fixture "$dir" "fm/$id" "$remote_head"
+  ! git -C "$dir/project" cat-file -e "$remote_head^{commit}" 2>/dev/null \
+    || fail "remote-only PR head unexpectedly exists in the project fixture"
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" "endpoint_task_id=$id" \
     "worktree=$dir/worktree" "project=$dir/project" "kind=ship" \
@@ -1063,6 +1074,8 @@ test_shared_slot_record_only_requires_landed_branch() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "--force discarded an unlanded stale branch"
+  assert_contains "$(cat "$dir/stderr")" "cannot prove branch fm/$id landed" \
+    "--force refusal did not exercise the landed-branch guard"
   assert_present "$dir/home/state/$id.meta" "forced refusal removed unlanded record"
 
   claim_pool_slot "$dir" "$id"
