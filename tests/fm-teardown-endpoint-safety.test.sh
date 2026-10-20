@@ -53,6 +53,14 @@ claim_pool_slot() {  # <case> <task-id> [home]
   printf 'task=%s\nhome=%s\n' "$id" "$home" > "$dir/pool/1/.fm-slot-owner"
 }
 
+run_unforced_case() {  # <case> <id>
+  local dir=$1 id=$2
+  FM_TEST_PR_HEAD=$(cat "$dir/pr-head" 2>/dev/null || true) \
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
+    "$TEARDOWN" "$id"
+}
+
 run_case() {  # <case> <id>
   local dir=$1 id=$2
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
@@ -881,6 +889,18 @@ test_remote_layout_homes_serialize_on_one_project_lock() {
   pass "Treehouse project locking still serializes two homes across the remote-seeded boundary"
 }
 
+write_merged_pr_fixture() {  # <case> <branch>
+  local dir=$1 branch=$2 head
+  head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = pr ] && [ "$2" = view ] || exit 1
+printf 'MERGED\t%s\n' "${FM_TEST_PR_HEAD:?}"
+SH
+  chmod +x "$dir/fakebin/gh"
+  printf '%s\n' "$head" > "$dir/pr-head"
+}
+
 # The slot-reuse sequence with only ONE discoverable record: the finished task's
 # worker exited, its slot was granted to another task, and that task leaves no
 # record this home can enumerate. Nothing in the record scan contradicts the
@@ -945,17 +965,18 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   rm -f "$dir/worktree/sentinel"
   [ -z "$(git -C "$dir/worktree" status --porcelain)" ] \
     || fail "clean-slot fixture is not clean: $(git -C "$dir/worktree" status --porcelain)"
+  git -C "$dir/project" branch "fm/$id"
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" "endpoint_task_id=$id" \
-    "worktree=$dir/worktree" "project=$dir/project" "kind=ship"
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship" \
+    "branch=fm/$id" "pr=https://example.invalid/owner/repo/pull/85"
+  write_merged_pr_fixture "$dir" "fm/$id"
   claim_pool_slot "$dir" "$other" "$dir/other-home"
   ( cd "$dir/worktree" && exec sleep 30 ) &
   worker=$!
 
   set +e
-  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
-  FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
-    "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "teardown of a clean ship task whose slot was reassigned failed: $(cat "$dir/stderr")"
