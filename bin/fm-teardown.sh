@@ -2577,7 +2577,7 @@ teardown_owns_worktree() {
 # project, to prove its committed work landed. Do not fetch, inspect, or
 # otherwise invoke git inside the occupied slot.
 require_record_only_branch_landed() {
-  local branch ref head default pr view state pr_head project_path slot_path
+  local branch ref head default pr view state remainder pr_head resolved_url project_path slot_path
   [ "$KIND" = ship ] || return 0  # Scouts have a separate report completion gate.
   branch=$(fm_meta_get "$META" branch)
   project_path=$(canonical_existing_dir "$PROJ") || project_path=
@@ -2604,13 +2604,16 @@ require_record_only_branch_landed() {
         | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1) || pr=
     fi
     if [ -n "$pr" ]; then
-      view=$(cd "$project_path" && gh pr view "$pr" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || view=
+      view=$(cd "$project_path" && gh pr view "$pr" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || view=
       state=${view%%$'\t'*}
-      pr_head=${view#*$'\t'}
-      if [ "$state" = MERGED ] && [ "$pr_head" != "$view" ] && [ -n "$pr_head" ] \
-          && ensure_commit_object "$pr" "$pr_head" "$project_path" \
+      remainder=${view#*$'\t'}
+      pr_head=${remainder%%$'\t'*}
+      resolved_url=${remainder#*$'\t'}
+      if [ "$state" = MERGED ] && [ "$pr_head" != "$remainder" ] && [ -n "$pr_head" ] \
+          && [ -n "$resolved_url" ] && ensure_commit_object "$pr" "$pr_head" "$project_path" \
           && { [ "$head" = "$pr_head" ] \
             || git -C "$project_path" merge-base --is-ancestor "$head" "$pr_head" 2>/dev/null; }; then
+        [ -n "$PR_URL" ] || PR_URL=$resolved_url
         return 0
       fi
     fi
