@@ -870,12 +870,17 @@ test_remote_layout_homes_serialize_on_one_project_lock() {
 write_merged_pr_fixture() {  # <case> <branch> [head]
   local dir=$1 branch=$2 head=${3:-}
   [ -n "$head" ] || head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
+  cat > "$dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = pr ] && [ "$2" = list ] || exit 1
+printf '%s\n' '  85,merged'
+SH
   cat > "$dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 [ "$1" = pr ] && [ "$2" = view ] || exit 1
-printf 'MERGED\t%s\n' "${FM_TEST_PR_HEAD:?}"
+printf 'MERGED\t%s\thttps://example.invalid/owner/repo/pull/85\n' "${FM_TEST_PR_HEAD:?}"
 SH
-  chmod +x "$dir/fakebin/gh"
+  chmod +x "$dir/fakebin/gh-axi" "$dir/fakebin/gh"
   printf '%s\n' "$head" > "$dir/pr-head"
 }
 
@@ -1007,19 +1012,37 @@ test_shared_slot_record_only_requires_landed_branch() {
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" "endpoint_task_id=$id" \
     "worktree=$dir/worktree" "project=$dir/project" "kind=ship" \
-    "branch=fm/$id" "pr=https://example.invalid/owner/repo/pull/85"
+    "branch=fm/$id" "spawn_gen=record-only-test"
   fm_write_meta "$dir/home/state/$other.meta" \
     "window=firstmate:fm-$other" "endpoint_task_id=$other" \
     "worktree=$dir/worktree" "project=$dir/project" "kind=ship"
+  cat > "$dir/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+printf 'tasks-axi' >> "${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
+printf '\n' >> "${FM_RUNTIME_LOG:?}"
+case "${1:-} ${2:-}" in
+  "--version ") printf '%s\n' 'tasks-axi 0.2.6' ;;
+  "update --help") printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body' ;;
+  "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>' ;;
+  "show old-task") printf '%s\n' '  state: in_flight' '  held: no' '  blocked: no' ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/fakebin/tasks-axi"
+  printf '%s\n' '## In flight' '- old-task - stale record' > "$dir/home/data/backlog.md"
   claim_pool_slot "$dir" "$other"
   printf 'neighbor data\n' > "$dir/worktree/neighbor"
   before=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
-  run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
+  FM_TASKS_AXI_COMPATIBLE=1 run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
     || fail "landed record-only cleanup failed: $(cat "$dir/stderr")"
   after=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
   [ "$before" = "$after" ] || fail "record-only cleanup changed the neighbor slot"
   assert_absent "$dir/home/state/$id.meta" "landed stale record was not retired"
   assert_present "$dir/home/state/$other.meta" "neighbor record was removed"
+  assert_contains "$(cat "$dir/runtime.log")" \
+    'tasks-axi <done> <old-task> <--pr> <https://example.invalid/owner/repo/pull/85>' \
+    "record-only cleanup omitted the discovered PR completion link"
   ! grep -Fq 'treehouse <return>' "$dir/runtime.log" || fail "neighbor slot returned"
 
   dir=$(make_case shared-slot-unlanded)
