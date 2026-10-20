@@ -1053,6 +1053,54 @@ test_stale_record_on_claimed_slot_retires_then_claimant_tears_down() {
   pass "fm-teardown: a stale record on a claimed slot retires, then the claimant tears down"
 }
 
+test_malformed_slot_claims_refuse_record_only_cleanup() {
+  local dir id=stale-task other=live-task claim mode rc
+
+  for claim in duplicate invalid; do
+    for mode in unforced forced; do
+      dir=$(make_case "malformed-slot-claim-$claim-$mode")
+      mark_case_as_treehouse_pool "$dir"
+      fm_write_meta "$dir/home/state/$id.meta" \
+        "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+        "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      fm_write_meta "$dir/home/state/$other.meta" \
+        "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+        "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      case "$claim" in
+        duplicate)
+          printf 'task=%s\ntask=%s\nhome=%s\n' "$id" "$other" "$dir/other-home" \
+            > "$dir/pool/1/.fm-slot-owner"
+          ;;
+        invalid)
+          printf 'task=../%s\nhome=%s\n' "$other" "$dir/other-home" \
+            > "$dir/pool/1/.fm-slot-owner"
+          ;;
+      esac
+
+      set +e
+      if [ "$mode" = forced ]; then
+        run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+      else
+        run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+      fi
+      rc=$?
+      set -e
+
+      [ "$rc" -ne 0 ] || fail "$mode record-only teardown accepted a $claim slot claim"
+      assert_present "$dir/home/state/$id.meta" "$mode teardown retired a record using a $claim slot claim"
+      assert_present "$dir/home/state/$other.meta" "$mode teardown removed the neighboring task record"
+      assert_present "$dir/pool/1/.fm-slot-owner" "$mode teardown removed the $claim slot claim"
+      assert_present "$dir/worktree/sentinel" "$mode teardown changed the occupied checkout"
+      [ ! -s "$dir/runtime.log" ] \
+        || fail "$mode teardown reached the runtime for a $claim slot claim: $(cat "$dir/runtime.log")"
+      assert_contains "$(cat "$dir/stderr")" "Slot owner is unknown" \
+        "$mode refusal did not reject the $claim slot claim as unreadable"
+    done
+  done
+
+  pass "fm-teardown: duplicate and invalid slot-owner identities cannot authorize record-only cleanup"
+}
+
 test_foreign_claim_refuses_when_pool_detection_fails() {
   local dir id=stale-task other=live-task mode rc before after
 
