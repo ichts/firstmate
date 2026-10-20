@@ -467,18 +467,32 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
   TEARDOWN_LOCK_WT=$(fm_meta_get "$META" worktree)
   TEARDOWN_LOCK_PROJECT=$(fm_meta_get "$META" project)
   if [ "$TEARDOWN_LOCK_KIND" != secondmate ] \
-     && [ "$TEARDOWN_LOCK_BACKEND" != orca ] \
-     && fm_treehouse_pool_slot "$TEARDOWN_LOCK_PROJECT" "$TEARDOWN_LOCK_WT"; then
-    TREEHOUSE_SLOT_LOCK_REQUIRED=1
-    TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$TEARDOWN_LOCK_PROJECT") || {
-      echo "REFUSED: cannot resolve the shared Treehouse project lock for ${TEARDOWN_LOCK_PROJECT:-<missing>}; nothing was changed" >&2
+     && [ "$TEARDOWN_LOCK_BACKEND" != orca ]; then
+    TEARDOWN_LOCK_CLAIM_PRESENT=0
+    TEARDOWN_LOCK_CLAIM_MARKER=$(fm_treehouse_slot_owner_marker "$TEARDOWN_LOCK_WT" 2>/dev/null) \
+      || TEARDOWN_LOCK_CLAIM_MARKER=
+    if [ -n "$TEARDOWN_LOCK_CLAIM_MARKER" ] \
+       && { [ -e "$TEARDOWN_LOCK_CLAIM_MARKER" ] || [ -L "$TEARDOWN_LOCK_CLAIM_MARKER" ]; }; then
+      TEARDOWN_LOCK_CLAIM_PRESENT=1
+    fi
+    fm_treehouse_slot_owner_state "$TEARDOWN_LOCK_WT" "$ID"
+    if fm_treehouse_pool_slot "$TEARDOWN_LOCK_PROJECT" "$TEARDOWN_LOCK_WT"; then
+      TREEHOUSE_SLOT_LOCK_REQUIRED=1
+      TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$TEARDOWN_LOCK_PROJECT") || {
+        echo "REFUSED: cannot resolve the shared Treehouse project lock for ${TEARDOWN_LOCK_PROJECT:-<missing>}; nothing was changed" >&2
+        exit 1
+      }
+      fm_lock_try_acquire "$TREEHOUSE_PROJECT_LOCK" || {
+        echo "REFUSED: another Treehouse slot allocation or return is in progress for $TEARDOWN_LOCK_PROJECT; nothing was changed" >&2
+        exit 1
+      }
+      TREEHOUSE_PROJECT_LOCK_HELD=1
+    elif [ "$FM_TREEHOUSE_SLOT_OWNER" = other ] \
+      || { [ "$FM_TREEHOUSE_SLOT_OWNER" = unsafe ] && [ "$TEARDOWN_LOCK_CLAIM_PRESENT" = 1 ]; }; then
+      echo "REFUSED: task $ID's recorded worktree $TEARDOWN_LOCK_WT carries a foreign or unreadable slot-owner claim, but its shared Treehouse pool identity cannot be verified; nothing was changed - not even with --force." >&2
+      echo "Inspect or repair ${TEARDOWN_LOCK_CLAIM_MARKER:-the claim beside $TEARDOWN_LOCK_WT} and the pool's Treehouse state, then retry." >&2
       exit 1
-    }
-    fm_lock_try_acquire "$TREEHOUSE_PROJECT_LOCK" || {
-      echo "REFUSED: another Treehouse slot allocation or return is in progress for $TEARDOWN_LOCK_PROJECT; nothing was changed" >&2
-      exit 1
-    }
-    TREEHOUSE_PROJECT_LOCK_HELD=1
+    fi
   fi
 fi
 CONTROL_LOCK="$STATE/.control-$ID.lock"

@@ -1122,6 +1122,43 @@ SH
   pass "fm-teardown: shared slot record-only cleanup requires a landed recorded branch and positive foreign claim"
 }
 
+test_foreign_claim_refuses_when_pool_detection_fails() {
+  local dir id=stale-task other=live-task mode rc before after
+
+  for mode in unforced forced; do
+    dir=$(make_case "foreign-claim-unverified-pool-$mode")
+    mark_case_as_treehouse_pool "$dir"
+    fm_write_meta "$dir/home/state/$id.meta" \
+      "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+    claim_pool_slot "$dir" "$other" "$dir/other-home"
+    printf 'occupied checkout\n' > "$dir/worktree/neighbor"
+    rm -f "$dir/pool/treehouse-state.json"
+    before=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
+
+    set +e
+    if [ "$mode" = forced ]; then
+      run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+    else
+      run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+    fi
+    rc=$?
+    set -e
+
+    [ "$rc" -ne 0 ] || fail "$mode teardown accepted a foreign claim after pool detection failed"
+    after=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
+    [ "$before" = "$after" ] || fail "$mode teardown changed an occupied checkout after pool detection failed"
+    assert_present "$dir/home/state/$id.meta" "$mode teardown removed the stale record despite unverifiable pool ownership"
+    assert_present "$dir/pool/1/.fm-slot-owner" "$mode teardown removed the foreign slot claim"
+    [ ! -s "$dir/runtime.log" ] \
+      || fail "$mode teardown reached the runtime after pool detection failed: $(cat "$dir/runtime.log")"
+    assert_contains "$(cat "$dir/stderr")" "shared Treehouse pool identity cannot be verified" \
+      "$mode refusal did not explain the unverifiable foreign-owned slot"
+  done
+
+  pass "fm-teardown: failed pool detection cannot bypass a foreign slot claim"
+}
+
 # The two states that must never become a false refusal: the task's own claim,
 # and no claim at all (a slot taken before claims existed, or already returned).
 test_own_and_absent_slot_claims_still_tear_down() {
@@ -1543,6 +1580,7 @@ test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
 test_shared_slot_record_only_requires_landed_branch
+test_foreign_claim_refuses_when_pool_detection_fails
 test_own_and_absent_slot_claims_still_tear_down
 test_recorded_endpoint_that_changed_directory_still_tears_down
 test_project_lock_anchors_at_the_local_root_across_home_layouts
