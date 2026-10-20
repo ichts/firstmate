@@ -63,6 +63,7 @@ run_unforced_case() {  # <case> <id>
 
 run_case() {  # <case> <id>
   local dir=$1 id=$2
+  FM_TEST_PR_HEAD=$(cat "$dir/pr-head" 2>/dev/null || true) \
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
   FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
     "$TEARDOWN" "$id" --force
@@ -889,9 +890,9 @@ test_remote_layout_homes_serialize_on_one_project_lock() {
   pass "Treehouse project locking still serializes two homes across the remote-seeded boundary"
 }
 
-write_merged_pr_fixture() {  # <case> <branch>
-  local dir=$1 branch=$2 head
-  head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
+write_merged_pr_fixture() {  # <case> <branch> [head]
+  local dir=$1 branch=$2 head=${3:-}
+  [ -n "$head" ] || head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
   cat > "$dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 [ "$1" = pr ] && [ "$2" = view ] || exit 1
