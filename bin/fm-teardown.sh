@@ -84,9 +84,9 @@
 # that path and hard-resets it before returning it, so releasing a slot that is
 # not genuinely this task's destroys another worker's live work. Before the first
 # cleanup step, teardown reads the positive slot-owner claim first. If it names
-# a different task, only this record can be retired, after proving its own
-# recorded branch landed without reading or changing the occupied worktree.
-# Otherwise record exclusivity is required: no OTHER task record in this home
+# a different task, only this record can be retired, after its normal completion
+# proof succeeds without reading or changing the occupied worktree. Otherwise
+# record exclusivity is required: no OTHER task record in this home
 # or any locally registered Firstmate home may name that live path.
 # That scan alone cannot prove THIS record is the current owner, because the task
 # that took the slot next may leave no record it can reach - its own worker may
@@ -100,10 +100,11 @@
 # names the claimant, and then finishes only this task's own cleanup - endpoint,
 # status, records, checks, backlog - while every step that would read or touch
 # that slot is skipped: no process kill under it, no git or hook operation in it,
-# no Treehouse return, and never the other task's claim. The recorded branch
-# must still be proved landed from the project repository and forge; a missing
-# branch, open PR, or inconclusive proof refuses, even with --force. Refusing
-# every reassigned record would strand landed records, because
+# no Treehouse return, and never the other task's claim. A ship's recorded
+# branch must still be proved landed from the separate project checkout and,
+# for PR projects, the forge; a missing branch, open PR, or inconclusive proof
+# refuses, even with --force. A scout still passes its report completion gate.
+# Refusing every reassigned record would strand landed records, because
 # bin/fm-backend.sh's endpoint validation refuses an empty or missing worktree=
 # unconditionally, so there is no line an operator could clear to get past it.
 # A claim that cannot be read proves nothing either way and refuses; inspect or
@@ -2400,9 +2401,10 @@ teardown_owns_worktree() {
   [ "$TEARDOWN_SLOT_REASSIGNED" != 1 ]
 }
 
-# A reassigned slot contains another task's HEAD and index. Only the recorded
-# branch in the project repository can prove this ship's committed work landed.
-# Do not fetch, inspect, or otherwise invoke git inside the occupied slot.
+# A reassigned slot contains another task's HEAD and index. Use this ship's
+# recorded branch in the separate project checkout, plus forge state for a PR
+# project, to prove its committed work landed. Do not fetch, inspect, or
+# otherwise invoke git inside the occupied slot.
 require_record_only_branch_landed() {
   local branch ref head default pr view state pr_head project_path slot_path
   [ "$KIND" = ship ] || return 0  # Scouts have a separate report completion gate.
