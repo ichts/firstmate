@@ -1122,6 +1122,54 @@ SH
   pass "fm-teardown: shared slot record-only cleanup requires a landed recorded branch and positive foreign claim"
 }
 
+test_malformed_slot_claims_refuse_record_only_cleanup() {
+  local dir id=stale-task other=live-task claim mode rc
+
+  for claim in duplicate invalid; do
+    for mode in unforced forced; do
+      dir=$(make_case "malformed-slot-claim-$claim-$mode")
+      mark_case_as_treehouse_pool "$dir"
+      fm_write_meta "$dir/home/state/$id.meta" \
+        "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+        "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      fm_write_meta "$dir/home/state/$other.meta" \
+        "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+        "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      case "$claim" in
+        duplicate)
+          printf 'task=%s\ntask=%s\nhome=%s\n' "$id" "$other" "$dir/other-home" \
+            > "$dir/pool/1/.fm-slot-owner"
+          ;;
+        invalid)
+          printf 'task=../%s\nhome=%s\n' "$other" "$dir/other-home" \
+            > "$dir/pool/1/.fm-slot-owner"
+          ;;
+      esac
+
+      set +e
+      if [ "$mode" = forced ]; then
+        run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+      else
+        run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+      fi
+      rc=$?
+      set -e
+
+      [ "$rc" -ne 0 ] || fail "$mode record-only teardown accepted a $claim slot claim"
+      assert_present "$dir/home/state/$id.meta" "$mode teardown retired a record using a $claim slot claim"
+      assert_present "$dir/home/state/$other.meta" "$mode teardown removed the neighboring task record"
+      assert_present "$dir/pool/1/.fm-slot-owner" "$mode teardown removed the $claim slot claim"
+      assert_present "$dir/worktree/sentinel" "$mode teardown changed the occupied checkout"
+      [ ! -s "$dir/runtime.log" ] \
+        || fail "$mode teardown reached the runtime for a $claim slot claim: $(cat "$dir/runtime.log")"
+      assert_contains "$(cat "$dir/stderr")" "Slot owner is unknown" \
+        "$mode refusal did not reject the $claim slot claim as unreadable"
+    done
+  done
+
+  pass "fm-teardown: duplicate and invalid slot-owner identities cannot authorize record-only cleanup"
+}
+
 test_foreign_claim_refuses_when_pool_detection_fails() {
   local dir id=stale-task other=live-task mode rc before after
 
@@ -1580,6 +1628,7 @@ test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
 test_shared_slot_record_only_requires_landed_branch
+test_malformed_slot_claims_refuse_record_only_cleanup
 test_foreign_claim_refuses_when_pool_detection_fails
 test_own_and_absent_slot_claims_still_tear_down
 test_recorded_endpoint_that_changed_directory_still_tears_down
