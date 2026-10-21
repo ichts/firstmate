@@ -1,0 +1,38 @@
+Record-only teardown end-to-end evidence
+========================================
+Command under test: bin/fm-teardown.sh old-task
+
+CLI stderr:
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /Users/ichts/.no-mistakes/worktrees/7bf215c2d2ab/01M5EYWGE6ANSZ547YG71HR7XX/.pi/extensions/fm-primary-turnend-guard.ts -e /Users/ichts/.no-mistakes/worktrees/7bf215c2d2ab/01M5EYWGE6ANSZ547YG71HR7XX/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+warning: task old-task's recorded worktree /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/pool/1/project was reassigned to task new-task (home /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/home), which claimed that pool slot after this record was written; that slot is no longer old-task's, so its processes, copy, and claim are left untouched and only old-task's own cleanup runs.
+
+CLI stdout:
+teardown old-task complete (window firstmate:fm-old-task; pool slot /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/worktree left to task new-task (home /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/home), which it was reassigned to)
+Backlog: old-task is closed in /private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+
+Persisted state after teardown:
+stale record: ABSENT (retired)
+slot-owner record: PRESENT (preserved)
+slot-owner claim:
+task=new-task
+home=/private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/home
+occupied-slot files: sentinel=present neighbor=present
+git calls targeting occupied slot: 0 bytes
+
+Lifecycle calls:
+tasks-axi <--version>
+tasks-axi <update> <--help>
+tasks-axi <mv> <--help>
+tasks-axi <show> <old-task> <--file> </private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/home/data/backlog.md>
+tmux <kill-window> <-t> <=firstmate:=fm-old-task>
+tasks-axi <done> <old-task> <--pr> <https://example.invalid/owner/repo/pull/85> <--file> </private/var/folders/zw/ryfg7cv539v2ht9m08vg55pm0000gn/T/fm-teardown-endpoint-safety.B6xhIX/shared-slot-record-only/home/data/backlog.md>
+tmux <list-windows> <-t> <=firstmate> <-F> <#{window_name}>
+tmux <list-windows> <-t> <=firstmate> <-F> <#{window_name}>
+tmux <list-windows> <-t> <firstmate> <-F> <#{window_name}>
+treehouse return: NOT CALLED
