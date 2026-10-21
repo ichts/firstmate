@@ -1138,6 +1138,201 @@ test_foreign_claim_refuses_when_pool_detection_fails() {
   pass "fm-teardown: failed pool detection cannot bypass a foreign slot claim"
 }
 
+# A finished record may retire beside the current owner, but not before its
+# recorded branch is proved landed independently of the occupied slot.
+test_shared_slot_record_only_requires_landed_branch() {
+  local dir id=old-task other=new-task rc before after new_head remote_head remote_tree
+  dir=$(make_case shared-slot-record-only)
+  mark_case_as_treehouse_pool "$dir"
+  git -C "$dir/project" branch "fm/$id"
+  git init -q --bare "$dir/remote.git"
+  git -C "$dir/project" remote add origin "$dir/remote.git"
+  git -C "$dir/project" push -q origin HEAD:refs/heads/main
+  remote_tree=$(git --git-dir="$dir/remote.git" rev-parse 'refs/heads/main^{tree}')
+  remote_head=$(printf 'merged remotely\n' \
+    | git --git-dir="$dir/remote.git" -c user.name=test -c user.email=test@example.invalid \
+      commit-tree "$remote_tree" -p "$(git --git-dir="$dir/remote.git" rev-parse refs/heads/main)")
+  git --git-dir="$dir/remote.git" update-ref refs/pull/85/head "$remote_head"
+  write_merged_pr_fixture "$dir" "fm/$id" "$remote_head"
+  ! git -C "$dir/project" cat-file -e "$remote_head^{commit}" 2>/dev/null \
+    || fail "remote-only PR head unexpectedly exists in the project fixture"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship" \
+    "branch=fm/$id" "spawn_gen=record-only-test"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship"
+  cat > "$dir/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+printf 'tasks-axi' >> "${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
+printf '\n' >> "${FM_RUNTIME_LOG:?}"
+case "${1:-} ${2:-}" in
+  "--version ") printf '%s\n' 'tasks-axi 0.2.6' ;;
+  "update --help") printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body' ;;
+  "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>' ;;
+  "show old-task") printf '%s\n' '  state: in_flight' '  held: no' '  blocked: no' ;;
+esac
+exit 0
+SH
+  chmod +x "$dir/fakebin/tasks-axi"
+  printf '%s\n' '## In flight' '- old-task - stale record' > "$dir/home/data/backlog.md"
+  claim_pool_slot "$dir" "$other"
+  printf 'neighbor data\n' > "$dir/worktree/neighbor"
+  before=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
+  FM_TASKS_AXI_COMPATIBLE=1 run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "landed record-only cleanup failed: $(cat "$dir/stderr")"
+  after=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
+  [ "$before" = "$after" ] || fail "record-only cleanup changed the neighbor slot"
+  assert_absent "$dir/home/state/$id.meta" "landed stale record was not retired"
+  assert_present "$dir/home/state/$other.meta" "neighbor record was removed"
+  assert_contains "$(cat "$dir/runtime.log")" \
+    'tasks-axi <done> <old-task> <--pr> <https://example.invalid/owner/repo/pull/85>' \
+    "record-only cleanup omitted the discovered PR completion link"
+  ! grep -Fq 'treehouse <return>' "$dir/runtime.log" || fail "neighbor slot returned"
+
+  dir=$(make_case shared-slot-unlanded)
+  mark_case_as_treehouse_pool "$dir"
+  git -C "$dir/project" branch "fm/$id"
+  write_merged_pr_fixture "$dir" "fm/$id"
+  new_head=$(printf 'unlanded\n' | git -C "$dir/project" -c user.name=test -c user.email=test@example.invalid \
+    commit-tree "$(git -C "$dir/project" rev-parse 'HEAD^{tree}')" -p "$(cat "$dir/pr-head")")
+  git -C "$dir/project" update-ref "refs/heads/fm/$id" "$new_head"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship" \
+    "branch=fm/$id" "pr=https://example.invalid/owner/repo/pull/85"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship"
+  claim_pool_slot "$dir" "$other"
+  set +e
+  run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "unlanded stale branch retired"
+  assert_present "$dir/home/state/$id.meta" "unlanded stale record was removed"
+  assert_present "$dir/home/state/$other.meta" "neighbor record was removed on refusal"
+  assert_contains "$(cat "$dir/stderr")" "slot owner $other" "refusal omitted owner and record-only reason"
+  [ ! -s "$dir/runtime.log" ] || fail "refusal touched runtime"
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "--force discarded an unlanded stale branch"
+  assert_contains "$(cat "$dir/stderr")" "cannot prove branch fm/$id landed" \
+    "--force refusal did not exercise the landed-branch guard"
+  assert_present "$dir/home/state/$id.meta" "forced refusal removed unlanded record"
+
+  claim_pool_slot "$dir" "$id"
+  set +e
+  run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "own claim bypassed shared-record refusal"
+  assert_contains "$(cat "$dir/stderr")" "$other" "own claim did not retain exclusivity refusal"
+  assert_present "$dir/home/state/$id.meta" "own-claim refusal removed record"
+
+  printf 'not-a-claim\n' > "$dir/pool/1/.fm-slot-owner"
+  set +e
+  run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "unreadable claim bypassed refusal"
+  assert_contains "$(cat "$dir/stderr")" "Slot owner is unknown; record-only teardown requires a readable claim" \
+    "unreadable claim did not explain the record-only path"
+  assert_present "$dir/home/state/$id.meta" "unreadable claim removed record"
+  pass "fm-teardown: shared slot record-only cleanup requires a landed recorded branch and positive foreign claim"
+}
+
+test_malformed_slot_claims_refuse_record_only_cleanup() {
+  local dir id=stale-task other=live-task claim mode rc
+
+  for claim in duplicate invalid; do
+    for mode in unforced forced; do
+      dir=$(make_case "malformed-slot-claim-$claim-$mode")
+      mark_case_as_treehouse_pool "$dir"
+      fm_write_meta "$dir/home/state/$id.meta" \
+        "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+        "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      fm_write_meta "$dir/home/state/$other.meta" \
+        "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+        "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+      case "$claim" in
+        duplicate)
+          printf 'task=%s\ntask=%s\nhome=%s\n' "$id" "$other" "$dir/other-home" \
+            > "$dir/pool/1/.fm-slot-owner"
+          ;;
+        invalid)
+          printf 'task=../%s\nhome=%s\n' "$other" "$dir/other-home" \
+            > "$dir/pool/1/.fm-slot-owner"
+          ;;
+      esac
+
+      set +e
+      if [ "$mode" = forced ]; then
+        run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+      else
+        run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+      fi
+      rc=$?
+      set -e
+
+      [ "$rc" -ne 0 ] || fail "$mode record-only teardown accepted a $claim slot claim"
+      assert_present "$dir/home/state/$id.meta" "$mode teardown retired a record using a $claim slot claim"
+      assert_present "$dir/home/state/$other.meta" "$mode teardown removed the neighboring task record"
+      assert_present "$dir/pool/1/.fm-slot-owner" "$mode teardown removed the $claim slot claim"
+      assert_present "$dir/worktree/sentinel" "$mode teardown changed the occupied checkout"
+      [ ! -s "$dir/runtime.log" ] \
+        || fail "$mode teardown reached the runtime for a $claim slot claim: $(cat "$dir/runtime.log")"
+      assert_contains "$(cat "$dir/stderr")" "Slot owner is unknown" \
+        "$mode refusal did not reject the $claim slot claim as unreadable"
+    done
+  done
+
+  pass "fm-teardown: duplicate and invalid slot-owner identities cannot authorize record-only cleanup"
+}
+
+test_foreign_claim_refuses_when_pool_detection_fails() {
+  local dir id=stale-task other=live-task mode rc before after
+
+  for mode in unforced forced; do
+    dir=$(make_case "foreign-claim-unverified-pool-$mode")
+    mark_case_as_treehouse_pool "$dir"
+    fm_write_meta "$dir/home/state/$id.meta" \
+      "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+      "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+    claim_pool_slot "$dir" "$other" "$dir/other-home"
+    printf 'occupied checkout\n' > "$dir/worktree/neighbor"
+    rm -f "$dir/pool/treehouse-state.json"
+    before=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
+
+    set +e
+    if [ "$mode" = forced ]; then
+      run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+    else
+      run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+    fi
+    rc=$?
+    set -e
+
+    [ "$rc" -ne 0 ] || fail "$mode teardown accepted a foreign claim after pool detection failed"
+    after=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
+    [ "$before" = "$after" ] || fail "$mode teardown changed an occupied checkout after pool detection failed"
+    assert_present "$dir/home/state/$id.meta" "$mode teardown removed the stale record despite unverifiable pool ownership"
+    assert_present "$dir/pool/1/.fm-slot-owner" "$mode teardown removed the foreign slot claim"
+    [ ! -s "$dir/runtime.log" ] \
+      || fail "$mode teardown reached the runtime after pool detection failed: $(cat "$dir/runtime.log")"
+    assert_contains "$(cat "$dir/stderr")" "shared Treehouse pool identity cannot be verified" \
+      "$mode refusal did not explain the unverifiable foreign-owned slot"
+  done
+
+  pass "fm-teardown: failed pool detection cannot bypass a foreign slot claim"
+}
+
+# The two states that must never become a false refusal: the task's own claim,
+# and no claim at all (a slot taken before claims existed, or already returned).
 # The two states that must never become a false refusal: the task's own claim,
 # and no claim at all (a slot taken before claims existed, or already returned).
 test_own_and_absent_slot_claims_still_tear_down() {
@@ -1559,6 +1754,7 @@ test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
 test_stale_record_on_claimed_slot_retires_then_claimant_tears_down
+test_shared_slot_record_only_requires_landed_branch
 test_own_and_absent_slot_claims_still_tear_down
 test_recorded_endpoint_that_changed_directory_still_tears_down
 test_project_lock_anchors_at_the_local_root_across_home_layouts
