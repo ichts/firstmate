@@ -907,6 +907,33 @@ SH
   printf '%s\n' "$head" > "$dir/pr-head"
 }
 
+write_merged_forgejo_pr_fixture() {  # <case> <branch>
+  local dir=$1 branch=$2 head
+  head=$(git -C "$dir/project" rev-parse "refs/heads/$branch") || return 1
+  cat > "$dir/fakebin/tea" <<'SH'
+#!/usr/bin/env bash
+printf 'tea' >> "${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
+printf '\n' >> "${FM_RUNTIME_LOG:?}"
+if [ "$1 $2 $3" = "login list --output" ] && [ "$4" = json ]; then
+  printf '%s\n' '[{"name":"fixture","url":"https://forge.example"}]'
+elif [ "$1" = api ]; then
+  printf '{"state":"closed","merged":true,"head":{"sha":"%s"}}\n' "${FM_TEST_PR_HEAD:?}"
+else
+  exit 1
+fi
+SH
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf 'gh' >> "${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
+printf '\n' >> "${FM_RUNTIME_LOG:?}"
+exit 88
+SH
+  chmod +x "$dir/fakebin/tea" "$dir/fakebin/gh"
+  printf '%s\n' "$head" > "$dir/pr-head"
+}
+
 # The slot-reuse sequence with only ONE discoverable record: the finished task's
 # worker exited, its slot was granted to another task, and that task leaves no
 # record this home can enumerate. Nothing in the record scan contradicts the
@@ -1215,6 +1242,28 @@ SH
     'tasks-axi <done> <old-task> <--pr> <https://example.invalid/owner/repo/pull/85>' \
     "record-only cleanup omitted the discovered PR completion link"
   ! grep -Fq 'treehouse <return>' "$dir/runtime.log" || fail "neighbor slot returned"
+
+  dir=$(make_case shared-slot-forgejo)
+  mark_case_as_treehouse_pool "$dir"
+  git -C "$dir/project" branch "fm/$id"
+  write_merged_forgejo_pr_fixture "$dir" "fm/$id"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship" \
+    "branch=fm/$id" "pr=https://forge.example/owner/repo/pulls/85"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=ship"
+  claim_pool_slot "$dir" "$other"
+  run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "Forgejo-backed record-only cleanup failed: $(cat "$dir/stderr")"
+  assert_absent "$dir/home/state/$id.meta" "Forgejo-backed landed stale record was not retired"
+  assert_present "$dir/home/state/$other.meta" "Forgejo-backed cleanup removed the neighbor record"
+  assert_contains "$(cat "$dir/runtime.log")" "tea <api>" \
+    "Forgejo-backed cleanup did not read the Forgejo PR record"
+  ! grep -Fq 'gh <pr> <view>' "$dir/runtime.log" \
+    || fail "Forgejo-backed cleanup incorrectly queried GitHub"
+  ! grep -Fq 'treehouse <return>' "$dir/runtime.log" || fail "Forgejo-backed cleanup returned the neighbor slot"
 
   dir=$(make_case shared-slot-unlanded)
   mark_case_as_treehouse_pool "$dir"

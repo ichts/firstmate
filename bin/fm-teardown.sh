@@ -1668,6 +1668,32 @@ $unpushed
 EOF
 }
 
+read_merged_pr_record() {  # <target> <repository>
+  local target=$1 repository=$2 view state remainder
+  TEARDOWN_PR_RECORD_HEAD=
+  TEARDOWN_PR_RECORD_URL=
+  if fm_pr_url_parse "$target" && [ "$FM_PR_PROVIDER" = forgejo ]; then
+    fm_pr_forgejo_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" || return 1
+    [ "$FM_PR_RECORD_MERGED" = true ] || return 1
+    fm_pr_head_valid "$FM_PR_RECORD_HEAD" || return 1
+    TEARDOWN_PR_RECORD_HEAD=$FM_PR_RECORD_HEAD
+    TEARDOWN_PR_RECORD_URL=$FM_PR_URL
+    return 0
+  fi
+  view=$(cd "$repository" && gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
+  state=${view%%$'\t'*}
+  remainder=${view#*$'\t'}
+  [ "$state" != "$view" ] || return 1
+  TEARDOWN_PR_RECORD_HEAD=${remainder%%$'\t'*}
+  TEARDOWN_PR_RECORD_URL=${remainder#*$'\t'}
+  [ "$TEARDOWN_PR_RECORD_HEAD" != "$remainder" ] || return 1
+  case "$state" in
+    MERGED|merged) ;;
+    *) return 1 ;;
+  esac
+  fm_pr_head_valid "$TEARDOWN_PR_RECORD_HEAD" && [ -n "$TEARDOWN_PR_RECORD_URL" ]
+}
+
 # Is the worktree's PR merged for local work contained in that PR? Resolves the
 # PR from the recorded pr= URL first, then from the branch name, and asks the
 # forge for both the PR state and head: a recorded Forgejo URL is read through
@@ -1676,33 +1702,16 @@ EOF
 # PR head, no PR is found, or any forge read error occurs - the caller then
 # falls back to the content check.
 pr_is_merged() {
-  local branch=$1 target view state remainder head resolved_url current landed=0
+  local branch=$1 target head resolved_url current landed=0
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
     target=$(pr_number_from_branch "$branch") || return 1
   fi
   [ -n "$target" ] || return 1
-  if fm_pr_url_parse "$target" && [ "$FM_PR_PROVIDER" = forgejo ]; then
-    fm_pr_forgejo_read_record "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" || return 1
-    [ "$FM_PR_RECORD_MERGED" = true ] || return 1
-    head=$FM_PR_RECORD_HEAD
-    fm_pr_head_valid "$head" || return 1
-    resolved_url=$FM_PR_URL
-  else
-    view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
-    state=${view%%$'\t'*}
-    remainder=${view#*$'\t'}
-    [ "$state" != "$view" ] || return 1
-    head=${remainder%%$'\t'*}
-    resolved_url=${remainder#*$'\t'}
-    [ "$head" != "$remainder" ] || return 1
-    case "$state" in
-      MERGED|merged) ;;
-      *) return 1 ;;
-    esac
-  fi
-  [ -n "$head" ] || return 1
+  read_merged_pr_record "$target" "$WT" || return 1
+  head=$TEARDOWN_PR_RECORD_HEAD
+  resolved_url=$TEARDOWN_PR_RECORD_URL
   ensure_commit_object "$target" "$head" || return 1
   current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
   if git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
@@ -2639,7 +2648,7 @@ teardown_owns_worktree() {
 # project, to prove its committed work landed. Do not fetch, inspect, or
 # otherwise invoke git inside the occupied slot.
 require_record_only_branch_landed() {
-  local branch ref head default pr view state remainder pr_head resolved_url project_path slot_path
+  local branch ref head default pr pr_head resolved_url project_path slot_path
   [ "$KIND" = ship ] || return 0  # Scouts have a separate report completion gate.
   branch=$(fm_meta_get "$META" branch)
   project_path=$(canonical_existing_dir "$PROJ") || project_path=
@@ -2665,14 +2674,10 @@ require_record_only_branch_landed() {
       pr=$(cd "$project_path" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null \
         | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1) || pr=
     fi
-    if [ -n "$pr" ]; then
-      view=$(cd "$project_path" && gh pr view "$pr" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || view=
-      state=${view%%$'\t'*}
-      remainder=${view#*$'\t'}
-      pr_head=${remainder%%$'\t'*}
-      resolved_url=${remainder#*$'\t'}
-      if [ "$state" = MERGED ] && [ "$pr_head" != "$remainder" ] && [ -n "$pr_head" ] \
-          && [ -n "$resolved_url" ] && ensure_commit_object "$pr" "$pr_head" "$project_path" \
+    if [ -n "$pr" ] && read_merged_pr_record "$pr" "$project_path"; then
+      pr_head=$TEARDOWN_PR_RECORD_HEAD
+      resolved_url=$TEARDOWN_PR_RECORD_URL
+      if ensure_commit_object "$pr" "$pr_head" "$project_path" \
           && { [ "$head" = "$pr_head" ] \
             || git -C "$project_path" merge-base --is-ancestor "$head" "$pr_head" 2>/dev/null; }; then
         [ -n "$PR_URL" ] || PR_URL=$resolved_url
