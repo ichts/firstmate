@@ -432,6 +432,57 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 }
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+
+teardown_lexical_abs_path() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+print(os.path.abspath(sys.argv[1]))
+PY
+}
+
+teardown_pool_slot_metadata() {  # <project-dir> <recorded-worktree>
+  local project=$1 recorded=$2 candidate target pool state marker
+  TEARDOWN_POOL_SLOT_PATH=
+  TEARDOWN_POOL_SLOT_MARKER=
+  [ -n "$recorded" ] && command -v python3 >/dev/null 2>&1 || return 1
+  candidate=$recorded
+  if [ -L "$recorded" ]; then
+    target=$(readlink "$recorded" 2>/dev/null) || return 1
+    case "$target" in
+      /*) candidate=$target ;;
+      *) candidate=$(dirname "$recorded")/$target ;;
+    esac
+  fi
+  candidate=$(teardown_lexical_abs_path "$candidate") || return 1
+  pool=$(dirname "$(dirname "$candidate")")
+  state="$pool/treehouse-state.json"
+  marker="$(dirname "$candidate")/.fm-slot-owner"
+  TEARDOWN_POOL_SLOT_PATH=$candidate
+  TEARDOWN_POOL_SLOT_MARKER=$marker
+  [ -f "$state" ] && [ ! -L "$state" ] || return 1
+  python3 - "$state" "$candidate" <<'PY' || return 1
+import json
+import os
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        data = json.load(handle)
+    candidate = os.path.abspath(sys.argv[2])
+    matches = [
+        item for item in data.get("worktrees", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+        and os.path.abspath(item["path"]) == candidate
+    ]
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+raise SystemExit(0 if len(matches) == 1 else 1)
+PY
+  git -C "$project" worktree list --porcelain 2>/dev/null \
+    | grep -Fqx "worktree $candidate"
+}
+
 # Supervision lease guard: post-landing cleanup is overlap territory between
 # the two Pi supervision actors; refuse while the OTHER actor holds this
 # task's live lease (contract: bin/fm-lease-lib.sh; no-op in homes without
@@ -451,6 +502,8 @@ META="$STATE/$ID.meta"
 TREEHOUSE_PROJECT_LOCK=
 TREEHOUSE_PROJECT_LOCK_HELD=0
 TREEHOUSE_SLOT_LOCK_REQUIRED=0
+TEARDOWN_VERIFIED_SLOT_PATH=
+TEARDOWN_VERIFIED_SLOT_MARKER=
 if [ -f "$META" ] && [ ! -L "$META" ]; then
   TEARDOWN_LOCK_KIND=$(fm_meta_get "$META" kind)
   [ -n "$TEARDOWN_LOCK_KIND" ] || TEARDOWN_LOCK_KIND=ship
@@ -461,14 +514,25 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
   if [ "$TEARDOWN_LOCK_KIND" != secondmate ] \
      && [ "$TEARDOWN_LOCK_BACKEND" != orca ]; then
     TEARDOWN_LOCK_CLAIM_PRESENT=0
-    TEARDOWN_LOCK_CLAIM_MARKER=$(fm_treehouse_slot_owner_marker "$TEARDOWN_LOCK_WT" 2>/dev/null) \
-      || TEARDOWN_LOCK_CLAIM_MARKER=
+    TEARDOWN_LOCK_POOL_VERIFIED=0
+    if teardown_pool_slot_metadata "$TEARDOWN_LOCK_PROJECT" "$TEARDOWN_LOCK_WT"; then
+      TEARDOWN_LOCK_POOL_VERIFIED=1
+      TEARDOWN_VERIFIED_SLOT_PATH=$TEARDOWN_POOL_SLOT_PATH
+      TEARDOWN_VERIFIED_SLOT_MARKER=$TEARDOWN_POOL_SLOT_MARKER
+    fi
+    TEARDOWN_LOCK_CLAIM_MARKER=$TEARDOWN_POOL_SLOT_MARKER
     if [ -n "$TEARDOWN_LOCK_CLAIM_MARKER" ] \
        && { [ -e "$TEARDOWN_LOCK_CLAIM_MARKER" ] || [ -L "$TEARDOWN_LOCK_CLAIM_MARKER" ]; }; then
       TEARDOWN_LOCK_CLAIM_PRESENT=1
     fi
-    fm_treehouse_slot_owner_state "$TEARDOWN_LOCK_WT" "$ID"
-    if fm_treehouse_pool_slot "$TEARDOWN_LOCK_PROJECT" "$TEARDOWN_LOCK_WT"; then
+    if [ -n "$TEARDOWN_LOCK_CLAIM_MARKER" ]; then
+      fm_treehouse_slot_owner_state_at_marker "$TEARDOWN_LOCK_CLAIM_MARKER" "$ID"
+    else
+      FM_TREEHOUSE_SLOT_OWNER=unsafe
+      FM_TREEHOUSE_SLOT_OWNER_ID=
+      FM_TREEHOUSE_SLOT_OWNER_HOME=
+    fi
+    if [ "$TEARDOWN_LOCK_POOL_VERIFIED" = 1 ]; then
       TREEHOUSE_SLOT_LOCK_REQUIRED=1
       TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$TEARDOWN_LOCK_PROJECT") || {
         echo "REFUSED: cannot resolve the shared Treehouse project lock for ${TEARDOWN_LOCK_PROJECT:-<missing>}; nothing was changed" >&2
@@ -1195,7 +1259,12 @@ KIND=$TEARDOWN_META_KIND
 TEARDOWN_POOL_SLOT_LOST=0
 EXPECTED_TREEHOUSE_PROJECT_LOCK=
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] \
-   && fm_treehouse_pool_slot "$PROJ" "$WT"; then
+   && teardown_pool_slot_metadata "$PROJ" "$WT"; then
+  if [ "$TEARDOWN_POOL_SLOT_PATH" != "$TEARDOWN_VERIFIED_SLOT_PATH" ] \
+     || [ "$TEARDOWN_POOL_SLOT_MARKER" != "$TEARDOWN_VERIFIED_SLOT_MARKER" ]; then
+    echo "REFUSED: task $ID's Treehouse slot identity changed while teardown acquired its locks; nothing was changed" >&2
+    exit 1
+  fi
   EXPECTED_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ") || {
     echo "REFUSED: cannot resolve the shared Treehouse project lock for ${PROJ:-<missing>}; nothing was changed" >&2
     exit 1
@@ -2438,8 +2507,8 @@ require_orca_worktree_path_match_if_present() {
 # record with nothing live to return skips them rather than refusing.
 teardown_live_slot_path() {
   [ "$KIND" != secondmate ] || return 1
-  fm_treehouse_pool_slot "$PROJ" "$WT" || return 1
-  canonical_existing_dir "$WT"
+  [ -n "$TEARDOWN_VERIFIED_SLOT_PATH" ] || return 1
+  printf '%s\n' "$TEARDOWN_VERIFIED_SLOT_PATH"
 }
 
 # Every local Firstmate state directory whose records can name a pool slot this
@@ -2517,9 +2586,13 @@ require_exclusive_task_worktree_slot() {
 # would strand every task in flight across the change for no evidence at all.
 # Those keep exactly the record-scan protection they had before.
 TEARDOWN_SLOT_REASSIGNED_RC=3
-require_owned_worktree_slot_record() {  # <task-id> <worktree>
-  local record_id=$1 worktree=$2 marker
-  fm_treehouse_slot_owner_state "$worktree" "$record_id"
+require_owned_worktree_slot_record() {  # <task-id> <worktree> [claim-marker]
+  local record_id=$1 worktree=$2 marker=${3:-}
+  if [ -n "$marker" ]; then
+    fm_treehouse_slot_owner_state_at_marker "$marker" "$record_id"
+  else
+    fm_treehouse_slot_owner_state "$worktree" "$record_id"
+  fi
   case "$FM_TREEHOUSE_SLOT_OWNER" in
     mine|absent) return 0 ;;
     other)
@@ -2527,7 +2600,9 @@ require_owned_worktree_slot_record() {  # <task-id> <worktree>
       return "$TEARDOWN_SLOT_REASSIGNED_RC"
       ;;
   esac
-  marker=$(fm_treehouse_slot_owner_marker "$worktree" 2>/dev/null) || marker="beside $worktree"
+  if [ -z "$marker" ]; then
+    marker=$(fm_treehouse_slot_owner_marker "$worktree" 2>/dev/null) || marker="beside $worktree"
+  fi
   echo "REFUSED: task $record_id's recorded worktree $worktree carries a slot-owner claim that cannot be read, so the slot cannot be proved to still be this task's; nothing was changed - not even with --force." >&2
   echo "Slot owner is unknown; record-only teardown requires a readable claim positively naming a different task and proof this record's branch landed. Inspect or repair $marker (task= and home= lines), then retry." >&2
   return 1
@@ -2542,7 +2617,7 @@ TEARDOWN_SLOT_REASSIGNED_HOME=
 require_owned_task_worktree_slot() {
   local slot rc=0
   slot=$(teardown_live_slot_path) || return 0
-  require_owned_worktree_slot_record "$ID" "$slot" || rc=$?
+  require_owned_worktree_slot_record "$ID" "$slot" "$TEARDOWN_VERIFIED_SLOT_MARKER" || rc=$?
   case "$rc" in
     0) return 0 ;;
     "$TEARDOWN_SLOT_REASSIGNED_RC")
@@ -2568,7 +2643,7 @@ require_record_only_branch_landed() {
   [ "$KIND" = ship ] || return 0  # Scouts have a separate report completion gate.
   branch=$(fm_meta_get "$META" branch)
   project_path=$(canonical_existing_dir "$PROJ") || project_path=
-  slot_path=$(teardown_live_slot_path) || slot_path=
+  slot_path=$TEARDOWN_VERIFIED_SLOT_PATH
   if [ -z "$branch" ] || [ -z "$project_path" ] || [ "$project_path" = "$slot_path" ] \
       || ! git check-ref-format "refs/heads/$branch" >/dev/null 2>&1; then
     echo "REFUSED: record-only teardown of $ID (slot owner $TEARDOWN_SLOT_REASSIGNED_TO) cannot identify its own branch in a separate project repository; nothing was changed." >&2

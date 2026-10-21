@@ -1644,13 +1644,12 @@ fm_treehouse_slot_owner_claim() {  # <worktree> <task-id> <home>
 # FM_TREEHOUSE_SLOT_OWNER_ID and FM_TREEHOUSE_SLOT_OWNER_HOME carry the recorded
 # claimant as evidence. The home is reported, never matched: a home that moved
 # must not turn a task's own slot into a refusal.
-fm_treehouse_slot_owner_state() {  # <worktree> <task-id>
-  local worktree=$1 id=$2 marker line owner_id='' owner_home='' owner_id_count=0
+fm_treehouse_slot_owner_state_at_marker() {  # <claim-marker> <task-id>
+  local marker=$1 id=$2 line owner_id='' owner_home='' owner_id_count=0
   local LC_ALL=C
   FM_TREEHOUSE_SLOT_OWNER=unsafe
   FM_TREEHOUSE_SLOT_OWNER_ID=
   FM_TREEHOUSE_SLOT_OWNER_HOME=
-  marker=$(fm_treehouse_slot_owner_marker "$worktree") || return 0
   if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
     FM_TREEHOUSE_SLOT_OWNER=absent
     return 0
@@ -1676,6 +1675,15 @@ fm_treehouse_slot_owner_state() {  # <worktree> <task-id>
   else
     FM_TREEHOUSE_SLOT_OWNER=other
   fi
+}
+
+fm_treehouse_slot_owner_state() {  # <worktree> <task-id>
+  local worktree=$1 id=$2 marker
+  FM_TREEHOUSE_SLOT_OWNER=unsafe
+  FM_TREEHOUSE_SLOT_OWNER_ID=
+  FM_TREEHOUSE_SLOT_OWNER_HOME=
+  marker=$(fm_treehouse_slot_owner_marker "$worktree") || return 0
+  fm_treehouse_slot_owner_state_at_marker "$marker" "$id"
 }
 
 # Drop a task's own claim once its slot is back in the pool. Never removes

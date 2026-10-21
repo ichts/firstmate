@@ -1141,7 +1141,7 @@ test_foreign_claim_refuses_when_pool_detection_fails() {
 # A finished record may retire beside the current owner, but not before its
 # recorded branch is proved landed independently of the occupied slot.
 test_shared_slot_record_only_requires_landed_branch() {
-  local dir id=old-task other=new-task rc before after new_head remote_head remote_tree
+  local dir id=old-task other=new-task rc before after new_head remote_head remote_tree real_git
   dir=$(make_case shared-slot-record-only)
   mark_case_as_treehouse_pool "$dir"
   git -C "$dir/project" branch "fm/$id"
@@ -1181,8 +1181,32 @@ SH
   claim_pool_slot "$dir" "$other"
   printf 'neighbor data\n' > "$dir/worktree/neighbor"
   before=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
-  FM_TASKS_AXI_COMPATIBLE=1 run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
-    || fail "landed record-only cleanup failed: $(cat "$dir/stderr")"
+  real_git=$(command -v git)
+  cat > "$dir/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    "$FM_FORBIDDEN_SLOT"|"$FM_FORBIDDEN_SLOT"/*)
+      printf '%s\n' "$*" >> "$FM_SLOT_ACCESS_LOG"
+      exit 97
+      ;;
+  esac
+done
+exec "$FM_REAL_GIT" "$@"
+SH
+  chmod +x "$dir/fakebin/git"
+  : > "$dir/slot-access.log"
+  chmod 000 "$dir/pool/1/project"
+  export FM_FORBIDDEN_SLOT="$dir/pool/1/project"
+  export FM_SLOT_ACCESS_LOG="$dir/slot-access.log"
+  export FM_REAL_GIT="$real_git"
+  FM_TASKS_AXI_COMPATIBLE=1 run_unforced_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  chmod 700 "$dir/pool/1/project"
+  unset FM_FORBIDDEN_SLOT FM_SLOT_ACCESS_LOG FM_REAL_GIT
+  [ "$rc" -eq 0 ] || fail "landed record-only cleanup failed: $(cat "$dir/stderr")"
+  [ ! -s "$dir/slot-access.log" ] \
+    || fail "record-only cleanup invoked git inside the occupied slot: $(cat "$dir/slot-access.log")"
   after=$(find "$dir/pool/1" -type f -exec shasum {} + | sort)
   [ "$before" = "$after" ] || fail "record-only cleanup changed the neighbor slot"
   assert_absent "$dir/home/state/$id.meta" "landed stale record was not retired"
